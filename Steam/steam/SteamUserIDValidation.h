@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ClassicRevEmuTicket.h"
+
 extern CLogFile* Logger;
 extern bool bLogging;
 extern bool bLogUserId;
@@ -209,6 +211,20 @@ STEAM_API ESteamError STEAM_CALL SteamStartValidatingUserIDTicket( void *pEncryp
 			if (bLogging && bLogUserId) Logger->Write("\t REVive auth ticket version %u not supported.\n", uVersion);
 			hRevHandle->eReturnCode = eSteamErrorInvalidUserIDTicket;
 		}
+	}
+	else if (revive::ParseClassicRevEmuTicket(pEncryptedUserIDTicketFromClient, uSizeOfEncryptedUserIDTicketFromClient, nullptr))
+	{
+		// Classic RevEmu / ClientMod Steam2 ticket (152 bytes).
+		// Build 4100 normally validates this through SteamGameServer002, but
+		// accepting it here as well keeps both legacy validation paths consistent.
+		if (bLogging && bLogUserId) Logger->Write("\t Client using classic RevEmu/ClientMod ticket.\n");
+
+		revive::ClassicRevEmuTicketInfo info;
+		revive::ParseClassicRevEmuTicket(pEncryptedUserIDTicketFromClient, uSizeOfEncryptedUserIDTicketFromClient, &info);
+		hRevHandle->eClientType = eClientRev;
+		hRevHandle->Steam3ID = info.steamID;
+		hRevHandle->uTicketIP = 0;
+		hRevHandle->eReturnCode = eSteamErrorNone;
 	}
 	else if (uCheckTicket == STEAMTICKET_SIGNATURE)
 	{

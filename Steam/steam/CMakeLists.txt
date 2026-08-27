@@ -32,4 +32,14 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 	add_library(steamvalidateuseridtickets SHARED Steam.cpp logFile.cpp strtools.cpp strtools_unicode.cpp)
 	target_compile_definitions(steamvalidateuseridtickets PRIVATE VALIDATOR_DLL ${COMMON_MACROS} ${PLATFORM_MACROS})
 	target_link_libraries(steamvalidateuseridtickets PRIVATE dl pthread)
+
+	# Old Source/Steam API compatibility backend used by CS:S Build 4100.
+	# This is deliberately a small standalone target: it implements the exact
+	# SteamClient006 / SteamGameServer002 era ABI instead of pulling in modern
+	# Steamworks interfaces.
+	add_library(steamclient SHARED ../steamclient_legacy/LegacySteamClient.cpp)
+	target_include_directories(steamclient PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	target_compile_definitions(steamclient PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
+	target_link_libraries(steamclient PRIVATE dl pthread)
+	set_target_properties(steamclient PROPERTIES OUTPUT_NAME steamclient)
 endif()

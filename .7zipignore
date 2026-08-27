@@ -1,0 +1,10 @@
+.git
+*.zip
+*.7z
+*.rar
+*.log
+*.dmp
+core
+core.*
+debug.log
+LICENSE
