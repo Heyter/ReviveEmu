@@ -66,7 +66,7 @@ static_assert(sizeof(GSClientSteam2AcceptPayload) == (sizeof(void *) == 4 ? 12u 
 
 void Fail(const char *message)
 {
-    std::fprintf(stderr, "M2.3 ABI smoke FAIL: %s\n", message ? message : "unknown error");
+    std::fprintf(stderr, "M3.1 ABI/auth smoke FAIL: %s\n", message ? message : "unknown error");
     std::exit(1);
 }
 
@@ -84,7 +84,7 @@ T Sym(void *library, const char *name)
     const char *error = dlerror();
     if (error || !symbol)
     {
-        std::fprintf(stderr, "M2.3 ABI smoke FAIL: missing symbol %s (%s)\n",
+        std::fprintf(stderr, "M3.1 ABI/auth smoke FAIL: missing symbol %s (%s)\n",
                      name, error ? error : "null");
         std::exit(1);
     }
@@ -111,6 +111,37 @@ uint32_t ExpectedServerAccount(uint32_t ip, uint16_t port)
 {
     uint32_t account = ip ^ (static_cast<uint32_t>(port) << 16) ^ 0x52455649u;
     return account ? account : 0x539u;
+}
+
+static const uint32_t kClassicTicketSize = 152;
+static const uint32_t kClassicHeader = 0x00000053u;
+static const uint32_t kClassicMagic = 0x00726576u;
+static const uint32_t kClassicSteamIDHigh = 0x01100001u;
+
+void WriteLE32(uint8_t *p, uint32_t value)
+{
+    p[0] = static_cast<uint8_t>(value);
+    p[1] = static_cast<uint8_t>(value >> 8);
+    p[2] = static_cast<uint8_t>(value >> 16);
+    p[3] = static_cast<uint8_t>(value >> 24);
+}
+
+void MakeClassicTicket(uint8_t (&ticket)[kClassicTicketSize], uint32_t hash)
+{
+    std::memset(ticket, 0, sizeof(ticket));
+    WriteLE32(ticket + 0x00, kClassicHeader);
+    WriteLE32(ticket + 0x04, hash);
+    WriteLE32(ticket + 0x08, kClassicMagic);
+    WriteLE32(ticket + 0x0c, 0);
+    WriteLE32(ticket + 0x10, hash * 2u);
+    WriteLE32(ticket + 0x14, kClassicSteamIDHigh);
+    for (size_t i = 0; i < 128; ++i)
+        ticket[0x18 + i] = static_cast<uint8_t>(i ^ 0x5a);
+}
+
+uint64_t ClassicSteamID64(uint32_t hash)
+{
+    return (static_cast<uint64_t>(kClassicSteamIDHigh) << 32) | (hash * 2u);
 }
 
 } // namespace
@@ -164,7 +195,8 @@ int main(int argc, char **argv)
     SteamTerminateGameConnectionFn terminate = Sym<SteamTerminateGameConnectionFn>(library, "Steam_TerminateGameConnection");
     BuildMarkerFn buildMarker = Sym<BuildMarkerFn>(library, "REVive_LegacySteamClient_BuildMarker");
 
-    Check(std::strcmp(buildMarker(), "REVive legacy SteamClient006 backend M2.3-dev.2") == 0,
+    const char *marker = buildMarker();
+    Check(marker && std::strstr(marker, "REVive legacy SteamClient006 backend") == marker,
           "unexpected build marker");
 
     int rc = -1;
@@ -253,20 +285,132 @@ int main(int argc, char **argv)
                                                    "server-name", "cstrike", "de_dust2", "1.0.0.34"),
           "SteamGameServer002 vtable slot 10 Obsolete_GSSetStatus failed");
 
-    Check(gsSendSteam2(flatGS, 77, NULL, 0, 0x7f000001u, 27015, NULL, 0),
-          "flat Steam_GSSendSteam2UserConnect ABI failed");
+    // M3.1 strict-auth negative path: malformed/unknown Steam2 tickets must
+    // return false and must not queue approval callbacks.
+    const uint32_t authIP = 0x7f000001u;
+    const uint16_t authPort = 27015;
+    uint8_t validTicket[kClassicTicketSize];
+    const uint32_t validHash = 1471518829u;
+    MakeClassicTicket(validTicket, validHash);
+
+    Check(!gsSendSteam2(flatGS, 70, NULL, 0, authIP, authPort, NULL, 0),
+          "NULL/0 Steam2 ticket must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "NULL/0 reject queued an auth callback");
+
+    Check(!gsSendSteam2(flatGS, 70, NULL, kClassicTicketSize, authIP, authPort, NULL, 0),
+          "NULL 152-byte Steam2 ticket pointer must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "NULL pointer reject queued an auth callback");
+
+    Check(!gsSendSteam2(flatGS, 71, validTicket, 151, authIP, authPort, NULL, 0),
+          "151-byte Steam2 ticket must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "151-byte reject queued an auth callback");
+
+    uint8_t oversizedTicket[153];
+    std::memcpy(oversizedTicket, validTicket, sizeof(validTicket));
+    oversizedTicket[152] = 0;
+    Check(!gsSendSteam2(flatGS, 72, oversizedTicket, sizeof(oversizedTicket), authIP, authPort, NULL, 0),
+          "153-byte Steam2 ticket must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "153-byte reject queued an auth callback");
+
+    uint8_t zeroTicket[kClassicTicketSize] = {};
+    Check(!gsSendSteam2(flatGS, 73, zeroTicket, sizeof(zeroTicket), authIP, authPort, NULL, 0),
+          "all-zero Steam2 ticket must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "all-zero reject queued an auth callback");
+
+    uint8_t ffTicket[kClassicTicketSize];
+    std::memset(ffTicket, 0xff, sizeof(ffTicket));
+    Check(!gsSendSteam2(flatGS, 74, ffTicket, sizeof(ffTicket), authIP, authPort, NULL, 0),
+          "all-FF Steam2 ticket must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "all-FF reject queued an auth callback");
+
+    uint8_t randomTicket[kClassicTicketSize];
+    for (size_t i = 0; i < sizeof(randomTicket); ++i)
+        randomTicket[i] = static_cast<uint8_t>((i * 37u + 11u) & 0xffu);
+    Check(!gsSendSteam2(flatGS, 75, randomTicket, sizeof(randomTicket), authIP, authPort, NULL, 0),
+          "random 152-byte Steam2 ticket must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "random reject queued an auth callback");
+
+    uint8_t corrupted[kClassicTicketSize];
+    std::memcpy(corrupted, validTicket, sizeof(corrupted));
+    corrupted[0] ^= 0x01;
+    Check(!gsSendSteam2(flatGS, 76, corrupted, sizeof(corrupted), authIP, authPort, NULL, 0),
+          "corrupted ClassicRevEmu header must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "header reject queued an auth callback");
+
+    std::memcpy(corrupted, validTicket, sizeof(corrupted));
+    corrupted[8] ^= 0x01;
+    Check(!gsSendSteam2(flatGS, 77, corrupted, sizeof(corrupted), authIP, authPort, NULL, 0),
+          "corrupted ClassicRevEmu magic must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "magic reject queued an auth callback");
+
+    std::memcpy(corrupted, validTicket, sizeof(corrupted));
+    WriteLE32(corrupted + 0x0c, 1);
+    Check(!gsSendSteam2(flatGS, 77, corrupted, sizeof(corrupted), authIP, authPort, NULL, 0),
+          "non-zero ClassicRevEmu reserved field must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "reserved-field reject queued an auth callback");
+
+    std::memcpy(corrupted, validTicket, sizeof(corrupted));
+    WriteLE32(corrupted + 0x14, kClassicSteamIDHigh ^ 0x00010000u);
+    Check(!gsSendSteam2(flatGS, 77, corrupted, sizeof(corrupted), authIP, authPort, NULL, 0),
+          "unexpected ClassicRevEmu SteamID high word must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "SteamID-high reject queued an auth callback");
+
+    std::memcpy(corrupted, validTicket, sizeof(corrupted));
+    WriteLE32(corrupted + 0x10, validHash * 2u + 2u);
+    Check(!gsSendSteam2(flatGS, 78, corrupted, sizeof(corrupted), authIP, authPort, NULL, 0),
+          "invalid hash/SteamID relation must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "identity-relation reject queued an auth callback");
+
+    std::memcpy(corrupted, validTicket, sizeof(corrupted));
+    WriteLE32(corrupted + 0x04, 0);
+    WriteLE32(corrupted + 0x10, 0);
+    Check(!gsSendSteam2(flatGS, 79, corrupted, sizeof(corrupted), authIP, authPort, NULL, 0),
+          "zero ClassicRevEmu identity must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "zero-identity reject queued an auth callback");
+    std::puts("[PASS] strict Steam2 reject-path cases");
+
+    // Positive regression: the accepted 152-byte ClassicRevEmu ticket must
+    // still produce the legacy Build 4100 callback sequence 205 -> 201.
+    const uint32_t acceptedAccount = 80;
+    const uint64_t expectedSteamID = ClassicSteamID64(validHash);
+    Check(gsSendSteam2(flatGS, acceptedAccount, validTicket, sizeof(validTicket), authIP, authPort, NULL, 0),
+          "valid ClassicRevEmu Steam2 ticket was rejected");
 
     callback = CallbackMsg_t();
-    Check(getCallback(flatPipe, &callback), "missing callback 205");
+    Check(getCallback(flatPipe, &callback), "missing callback 205 for valid ClassicRevEmu ticket");
     Check(callback.m_iCallback == 205, "first auth callback must be 205");
     Check(callback.m_cubParam == (sizeof(void *) == 4 ? 12 : 16), "callback 205 payload size mismatch");
+    Check(callback.m_pubParam != NULL, "callback 205 payload pointer is null");
+    GSClientSteam2AcceptPayload acceptPayload = {};
+    std::memcpy(&acceptPayload, callback.m_pubParam, sizeof(acceptPayload));
+    Check(acceptPayload.userID == acceptedAccount && acceptPayload.steamID == expectedSteamID,
+          "callback 205 identity payload mismatch");
     freeCallback(flatPipe);
 
     callback = CallbackMsg_t();
-    Check(getCallback(flatPipe, &callback), "missing callback 201");
+    Check(getCallback(flatPipe, &callback), "missing callback 201 for valid ClassicRevEmu ticket");
     Check(callback.m_iCallback == 201 && callback.m_cubParam == 16,
           "callback 201 payload mismatch");
+    Check(callback.m_pubParam != NULL, "callback 201 payload pointer is null");
+    GSClientApprovePayload approvePayload = {};
+    std::memcpy(&approvePayload, callback.m_pubParam, sizeof(approvePayload));
+    Check(approvePayload.steamID == expectedSteamID && approvePayload.ownerSteamID == expectedSteamID,
+          "callback 201 identity payload mismatch");
     freeCallback(flatPipe);
+    std::puts("[PASS] valid ClassicRevEmu 152-byte positive regression");
 
     Check(initiate(flatUser, flatPipe, NULL, 0, 0, 240, 0x7f000001u, 27016, false) == 0,
           "Steam_InitiateGameConnection exact ABI failed");
@@ -276,6 +420,6 @@ int main(int argc, char **argv)
     Check(!gsBLoggedOn(flatGS), "flat Steam_GSLogOff failed");
 
     dlclose(library);
-    std::puts("M2.3 ABI smoke PASS");
+    std::puts("M3.1 ABI/auth smoke PASS");
     return 0;
 }

@@ -156,14 +156,6 @@ const char *Steam2String(const CSteamID &steamID, char *buf, size_t bufSize)
     return buf;
 }
 
-CSteamID MakeFallbackUserID(uint32 ip)
-{
-    uint32 account = ip;
-    if (account == 0)
-        account = 2;
-    return CSteamID(account, k_unSteamUserDefaultInstance, k_EUniversePublic, k_EAccountTypeIndividual);
-}
-
 CSteamID MakeServerID()
 {
     uint32 account = (g_localIP ^ (static_cast<uint32>(g_localPort) << 16) ^ 0x52455649u);
@@ -347,29 +339,31 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
                                                   uint32 cookieLen)
 {
     revive::ClassicRevEmuTicketInfo info;
-    CSteamID steamID;
-    bool classic = revive::ParseClassicRevEmuTicket(rawKey, rawKeyLen, &info);
+    const revive::ClassicRevEmuTicketResult ticketResult =
+        revive::ValidateClassicRevEmuTicket(rawKey, rawKeyLen, &info);
 
-    if (classic)
-        steamID = info.steamID;
-    else
-        steamID = MakeFallbackUserID(ip);
+    if (ticketResult != revive::kClassicRevEmuTicketValid)
+    {
+        Log("Steam2 auth REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u reason=%s",
+            accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
+            revive::ClassicRevEmuTicketResultString(ticketResult));
+        return false;
+    }
 
+    const CSteamID steamID = info.steamID;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_steam2Users[accountId] = steamID;
     }
 
     char steam2[64];
-    Log("GSSendSteam2UserConnect account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u type=%s steam2=%s steamid64=%llu",
+    Log("GSSendSteam2UserConnect account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u type=ClassicRevEmu steam2=%s steamid64=%llu",
         accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
-        classic ? "ClassicRevEmu" : "FallbackIP",
         Steam2String(steamID, steam2, sizeof(steam2)),
         static_cast<unsigned long long>(steamID.ConvertToUint64()));
 
-    if (classic)
-        Log("ClassicRevEmu hash=%u steamid_low=0x%08x steamid_high=0x%08x",
-            info.hash, info.steamIDLow, info.steamIDHigh);
+    Log("ClassicRevEmu hash=%u steamid_low=0x%08x steamid_high=0x%08x",
+        info.hash, info.steamIDLow, info.steamIDHigh);
 
     // SteamGameServer002 is a Steam2-era interface. Build 4100 keeps the
     // pending connection keyed by unUserID and expects GSClientSteam2Accept_t
@@ -685,5 +679,5 @@ REVIVE_EXPORT void Steam_TerminateGameConnection(HSteamUser user, HSteamPipe pip
 // Marker used by Docker/startup validation without depending on symbol tools in runtime.
 REVIVE_EXPORT const char *REVive_LegacySteamClient_BuildMarker()
 {
-    return "REVive legacy SteamClient006 backend M2.3-dev.2";
+    return "REVive legacy SteamClient006 backend M3.1-dev.1";
 }
