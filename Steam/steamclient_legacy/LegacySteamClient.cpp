@@ -33,6 +33,7 @@ static const HSteamPipe kPipe = 1;
 static const HSteamUser kUser = 1;
 static const int kCallbackSteamServersConnected = 101;
 static const int kCallbackGSClientApprove = 201;
+static const int kCallbackGSClientSteam2Accept = 205;
 
 struct CallbackMsg_t
 {
@@ -107,10 +108,38 @@ void QueueCallback(int callback, const void *payload, size_t payloadSize)
     Log("callback queued id=%d size=%u", callback, static_cast<unsigned>(payloadSize));
 }
 
+#pragma pack(push, 4)
+struct GSClientApprovePayload
+{
+    CSteamID steamID;
+    CSteamID ownerSteamID;
+};
+
+struct GSClientSteam2AcceptPayload
+{
+    uint32 userID;
+    uint64 steamID;
+};
+#pragma pack(pop)
+
+static_assert(sizeof(CSteamID) == 8, "CSteamID ABI must be 8 bytes");
+static_assert(sizeof(GSClientApprovePayload) == 16, "GSClientApprove callback payload ABI must be 16 bytes");
+static_assert(sizeof(GSClientSteam2AcceptPayload) == 12, "GSClientSteam2Accept callback payload ABI must be 12 bytes on legacy x86 ABI");
+
 void QueueClientApprove(const CSteamID &steamID)
 {
-    const uint64 id = steamID.ConvertToUint64();
-    QueueCallback(kCallbackGSClientApprove, &id, sizeof(id));
+    GSClientApprovePayload payload;
+    payload.steamID = steamID;
+    payload.ownerSteamID = steamID;
+    QueueCallback(kCallbackGSClientApprove, &payload, sizeof(payload));
+}
+
+void QueueSteam2Accept(uint32 userID, const CSteamID &steamID)
+{
+    GSClientSteam2AcceptPayload payload;
+    payload.userID = userID;
+    payload.steamID = steamID.ConvertToUint64();
+    QueueCallback(kCallbackGSClientSteam2Accept, &payload, sizeof(payload));
 }
 
 const char *Steam2String(const CSteamID &steamID, char *buf, size_t bufSize)
@@ -343,6 +372,12 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
         Log("ClassicRevEmu hash=%u steamid_low=0x%08x steamid_high=0x%08x",
             info.hash, info.steamIDLow, info.steamIDHigh);
 
+    // SteamGameServer002 is a Steam2-era interface. Build 4100 keeps the
+    // pending connection keyed by unUserID and expects GSClientSteam2Accept_t
+    // (callback 205) to bind that pending user to the authenticated SteamID.
+    // Fire the Steam3-style approve callback as well for compatibility, matching
+    // legacy-compatible implementations such as gbe_fork.
+    QueueSteam2Accept(accountId, steamID);
     QueueClientApprove(steamID);
     return true;
 }
