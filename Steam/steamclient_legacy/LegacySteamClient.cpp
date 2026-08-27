@@ -47,6 +47,9 @@ struct QueuedCallback
     HSteamUser user;
     int callback;
     std::vector<uint8> payload;
+    uint32 accountId;
+    uint64 steamID;
+    bool authCallback;
 };
 
 std::mutex g_mutex;
@@ -91,20 +94,29 @@ void Log(const char *fmt, ...)
     std::fclose(f);
 }
 
-void QueueCallback(int callback, const void *payload, size_t payloadSize)
+void QueueCallbackLocked(int callback, const void *payload, size_t payloadSize,
+                         uint32 accountId, uint64 steamID, bool authCallback)
 {
     QueuedCallback item;
     item.user = kUser;
     item.callback = callback;
+    item.accountId = accountId;
+    item.steamID = steamID;
+    item.authCallback = authCallback;
     if (payload && payloadSize)
     {
         const uint8 *p = static_cast<const uint8 *>(payload);
         item.payload.assign(p, p + payloadSize);
     }
 
-    std::lock_guard<std::mutex> lock(g_mutex);
     g_callbacks.push_back(item);
     Log("callback queued id=%d size=%u", callback, static_cast<unsigned>(payloadSize));
+}
+
+void QueueCallback(int callback, const void *payload, size_t payloadSize)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    QueueCallbackLocked(callback, payload, payloadSize, 0, 0, false);
 }
 
 #pragma pack(push, 8)
@@ -141,12 +153,43 @@ void QueueClientApprove(const CSteamID &steamID)
     QueueCallback(kCallbackGSClientApprove, &payload, sizeof(payload));
 }
 
-void QueueSteam2Accept(uint32 userID, const CSteamID &steamID)
+void QueueSteam2AuthCallbacksLocked(uint32 accountId, const CSteamID &steamID)
 {
-    GSClientSteam2AcceptPayload payload;
-    payload.userID = userID;
-    payload.steamID = steamID.ConvertToUint64();
-    QueueCallback(kCallbackGSClientSteam2Accept, &payload, sizeof(payload));
+    const uint64 steamID64 = steamID.ConvertToUint64();
+
+    GSClientSteam2AcceptPayload acceptPayload;
+    acceptPayload.userID = accountId;
+    acceptPayload.steamID = steamID64;
+    QueueCallbackLocked(kCallbackGSClientSteam2Accept, &acceptPayload, sizeof(acceptPayload),
+                        accountId, steamID64, true);
+
+    GSClientApprovePayload approvePayload;
+    approvePayload.steamID = steamID;
+    approvePayload.ownerSteamID = steamID;
+    QueueCallbackLocked(kCallbackGSClientApprove, &approvePayload, sizeof(approvePayload),
+                        accountId, steamID64, true);
+}
+
+size_t RemovePendingAuthCallbacksLocked(uint32 accountId)
+{
+    size_t removed = 0;
+    std::deque<QueuedCallback>::iterator it = g_callbacks.begin();
+    if (g_callbackInFlight && it != g_callbacks.end())
+        ++it; // The caller owns the front payload pointer until Steam_FreeLastCallback.
+
+    while (it != g_callbacks.end())
+    {
+        if (it->authCallback && it->accountId == accountId)
+        {
+            it = g_callbacks.erase(it);
+            ++removed;
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    return removed;
 }
 
 const char *Steam2String(const CSteamID &steamID, char *buf, size_t bufSize)
@@ -351,27 +394,70 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
     }
 
     const CSteamID steamID = info.steamID;
+    const uint64 steamID64 = steamID.ConvertToUint64();
+    bool idempotent = false;
+    const char *stateRejectReason = NULL;
+
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        g_steam2Users[accountId] = steamID;
+
+        std::map<uint32, CSteamID>::const_iterator accountIt = g_steam2Users.find(accountId);
+        if (accountIt != g_steam2Users.end())
+        {
+            if (accountIt->second.ConvertToUint64() == steamID64)
+                idempotent = true;
+            else
+                stateRejectReason = "account_conflict";
+        }
+        else
+        {
+            for (std::map<uint32, CSteamID>::const_iterator it = g_steam2Users.begin();
+                 it != g_steam2Users.end(); ++it)
+            {
+                if (it->second.ConvertToUint64() == steamID64)
+                {
+                    stateRejectReason = "duplicate_steamid";
+                    break;
+                }
+            }
+        }
+
+        if (!stateRejectReason && !idempotent)
+        {
+            g_steam2Users[accountId] = steamID;
+
+            // Keep 205 -> 201 as one state/callback transaction. Concurrent
+            // authentications may reorder whole client pairs, but callbacks for
+            // one identity must never interleave with another identity.
+            QueueSteam2AuthCallbacksLocked(accountId, steamID);
+        }
     }
 
     char steam2[64];
+    if (stateRejectReason)
+    {
+        Log("Steam2 auth REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u reason=%s steam2=%s steamid64=%llu",
+            accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen, stateRejectReason,
+            Steam2String(steamID, steam2, sizeof(steam2)),
+            static_cast<unsigned long long>(steamID64));
+        return false;
+    }
+
+    if (idempotent)
+    {
+        Log("Steam2 auth IDEMPOTENT account=%u steam2=%s steamid64=%llu callbacks=0",
+            accountId, Steam2String(steamID, steam2, sizeof(steam2)),
+            static_cast<unsigned long long>(steamID64));
+        return true;
+    }
+
     Log("GSSendSteam2UserConnect account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u type=ClassicRevEmu steam2=%s steamid64=%llu",
         accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
         Steam2String(steamID, steam2, sizeof(steam2)),
-        static_cast<unsigned long long>(steamID.ConvertToUint64()));
+        static_cast<unsigned long long>(steamID64));
 
     Log("ClassicRevEmu hash=%u steamid_low=0x%08x steamid_high=0x%08x",
         info.hash, info.steamIDLow, info.steamIDHigh);
-
-    // SteamGameServer002 is a Steam2-era interface. Build 4100 keeps the
-    // pending connection keyed by unUserID and expects GSClientSteam2Accept_t
-    // (callback 205) to bind that pending user to the authenticated SteamID.
-    // Fire the Steam3-style approve callback as well for compatibility, matching
-    // legacy-compatible implementations such as gbe_fork.
-    QueueSteam2Accept(accountId, steamID);
-    QueueClientApprove(steamID);
     return true;
 }
 
@@ -387,17 +473,38 @@ bool CSteamGameServer002::GSSendSteam3UserConnect(CSteamID steamID, uint32 ip, c
 bool CSteamGameServer002::GSRemoveUserConnect(uint32 accountId)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
-    g_steam2Users.erase(accountId);
-    Log("GSRemoveUserConnect account=%u", accountId);
+    const size_t erased = g_steam2Users.erase(accountId);
+    const size_t callbacksRemoved = RemovePendingAuthCallbacksLocked(accountId);
+    Log("GSRemoveUserConnect account=%u state_removed=%u callbacks_removed=%u", accountId,
+        static_cast<unsigned>(erased), static_cast<unsigned>(callbacksRemoved));
     return true;
 }
 
 bool CSteamGameServer002::GSSendUserDisconnect(CSteamID steamID, uint32 accountId)
 {
+    const uint64 steamID64 = steamID.ConvertToUint64();
     std::lock_guard<std::mutex> lock(g_mutex);
-    g_steam2Users.erase(accountId);
-    Log("GSSendUserDisconnect account=%u steamid64=%llu", accountId,
-        static_cast<unsigned long long>(steamID.ConvertToUint64()));
+    std::map<uint32, CSteamID>::iterator it = g_steam2Users.find(accountId);
+
+    if (it == g_steam2Users.end())
+    {
+        Log("GSSendUserDisconnect account=%u steamid64=%llu state=already_absent", accountId,
+            static_cast<unsigned long long>(steamID64));
+        return true;
+    }
+
+    if (it->second.ConvertToUint64() != steamID64)
+    {
+        Log("GSSendUserDisconnect REJECT account=%u steamid64=%llu expected=%llu reason=identity_mismatch",
+            accountId, static_cast<unsigned long long>(steamID64),
+            static_cast<unsigned long long>(it->second.ConvertToUint64()));
+        return false;
+    }
+
+    g_steam2Users.erase(it);
+    const size_t callbacksRemoved = RemovePendingAuthCallbacksLocked(accountId);
+    Log("GSSendUserDisconnect account=%u steamid64=%llu callbacks_removed=%u", accountId,
+        static_cast<unsigned long long>(steamID64), static_cast<unsigned>(callbacksRemoved));
     return true;
 }
 
@@ -679,5 +786,5 @@ REVIVE_EXPORT void Steam_TerminateGameConnection(HSteamUser user, HSteamPipe pip
 // Marker used by Docker/startup validation without depending on symbol tools in runtime.
 REVIVE_EXPORT const char *REVive_LegacySteamClient_BuildMarker()
 {
-    return "REVive legacy SteamClient006 backend M3.1-dev.1";
+    return "REVive legacy SteamClient006 backend M3.2-dev.1";
 }

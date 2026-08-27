@@ -1,9 +1,11 @@
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <thread>
 
 namespace
 {
@@ -66,7 +68,7 @@ static_assert(sizeof(GSClientSteam2AcceptPayload) == (sizeof(void *) == 4 ? 12u 
 
 void Fail(const char *message)
 {
-    std::fprintf(stderr, "M3.1 ABI/auth smoke FAIL: %s\n", message ? message : "unknown error");
+    std::fprintf(stderr, "M3.2 ABI/auth/state smoke FAIL: %s\n", message ? message : "unknown error");
     std::exit(1);
 }
 
@@ -84,7 +86,7 @@ T Sym(void *library, const char *name)
     const char *error = dlerror();
     if (error || !symbol)
     {
-        std::fprintf(stderr, "M3.1 ABI/auth smoke FAIL: missing symbol %s (%s)\n",
+        std::fprintf(stderr, "M3.2 ABI/auth/state smoke FAIL: missing symbol %s (%s)\n",
                      name, error ? error : "null");
         std::exit(1);
     }
@@ -169,6 +171,8 @@ int main(int argc, char **argv)
     typedef bool (*SteamGSBSecureFn)(void *);
     typedef bool (*SteamGSGetKeyFn)(void *, void *, uint32_t *, uint32_t);
     typedef bool (*SteamGSSendSteam2Fn)(void *, uint32_t, const void *, uint32_t, uint32_t, uint16_t, const void *, uint32_t);
+    typedef bool (*SteamGSRemoveUserConnectFn)(void *, uint32_t);
+    typedef bool (*SteamGSSendUserDisconnectFn)(void *, uint64_t, uint32_t);
     typedef bool (*SteamGSSetServerTypeFn)(void *, int32_t, uint32_t, uint32_t, uint32_t, const char *, const char *);
     typedef uint64_t (*SteamGSGetSteamIDFn)(void *);
     typedef int (*SteamInitiateGameConnectionFn)(HSteamUser, HSteamPipe, void *, int, uint64_t, int, uint32_t, uint16_t, bool);
@@ -189,6 +193,8 @@ int main(int argc, char **argv)
     SteamGSBSecureFn gsBSecure = Sym<SteamGSBSecureFn>(library, "Steam_GSBSecure");
     SteamGSGetKeyFn gsGetKey = Sym<SteamGSGetKeyFn>(library, "Steam_GSGetSteam2GetEncryptionKeyToSendToNewClient");
     SteamGSSendSteam2Fn gsSendSteam2 = Sym<SteamGSSendSteam2Fn>(library, "Steam_GSSendSteam2UserConnect");
+    SteamGSRemoveUserConnectFn gsRemoveUserConnect = Sym<SteamGSRemoveUserConnectFn>(library, "Steam_GSRemoveUserConnect");
+    SteamGSSendUserDisconnectFn gsSendUserDisconnect = Sym<SteamGSSendUserDisconnectFn>(library, "Steam_GSSendUserDisconnect");
     SteamGSSetServerTypeFn gsSetServerType = Sym<SteamGSSetServerTypeFn>(library, "Steam_GSSetServerType");
     SteamGSGetSteamIDFn gsGetSteamID = Sym<SteamGSGetSteamIDFn>(library, "Steam_GSGetSteamID");
     SteamInitiateGameConnectionFn initiate = Sym<SteamInitiateGameConnectionFn>(library, "Steam_InitiateGameConnection");
@@ -412,6 +418,230 @@ int main(int argc, char **argv)
     freeCallback(flatPipe);
     std::puts("[PASS] valid ClassicRevEmu 152-byte positive regression");
 
+    // M3.2 multi-client/state correctness. Start from an empty active-user
+    // state after the M3.1 positive regression above.
+    Check(gsSendUserDisconnect(flatGS, expectedSteamID, acceptedAccount),
+          "failed to clean up M3.1 positive auth state");
+
+    const uint32_t accountA = 101, accountB = 102, accountC = 103, accountD = 104;
+    const uint32_t hashA = 100000001u, hashB = 200000002u, hashC = 300000003u, hashD = 400000004u;
+    const uint64_t steamA = ClassicSteamID64(hashA), steamB = ClassicSteamID64(hashB);
+    const uint64_t steamC = ClassicSteamID64(hashC), steamD = ClassicSteamID64(hashD);
+    uint8_t ticketA[kClassicTicketSize], ticketB[kClassicTicketSize];
+    uint8_t ticketC[kClassicTicketSize], ticketD[kClassicTicketSize];
+    MakeClassicTicket(ticketA, hashA);
+    MakeClassicTicket(ticketB, hashB);
+    MakeClassicTicket(ticketC, hashC);
+    MakeClassicTicket(ticketD, hashD);
+
+    std::atomic<bool> startAuth(false);
+    bool authA = false, authB = false, authC = false, authD = false;
+    std::thread threadA([&]() {
+        while (!startAuth.load(std::memory_order_acquire)) std::this_thread::yield();
+        authA = gsSendSteam2(flatGS, accountA, ticketA, sizeof(ticketA), authIP, authPort, NULL, 0);
+    });
+    std::thread threadB([&]() {
+        while (!startAuth.load(std::memory_order_acquire)) std::this_thread::yield();
+        authB = gsSendSteam2(flatGS, accountB, ticketB, sizeof(ticketB), authIP, authPort, NULL, 0);
+    });
+    std::thread threadC([&]() {
+        while (!startAuth.load(std::memory_order_acquire)) std::this_thread::yield();
+        authC = gsSendSteam2(flatGS, accountC, ticketC, sizeof(ticketC), authIP, authPort, NULL, 0);
+    });
+    std::thread threadD([&]() {
+        while (!startAuth.load(std::memory_order_acquire)) std::this_thread::yield();
+        authD = gsSendSteam2(flatGS, accountD, ticketD, sizeof(ticketD), authIP, authPort, NULL, 0);
+    });
+    startAuth.store(true, std::memory_order_release);
+    threadA.join(); threadB.join(); threadC.join(); threadD.join();
+    Check(authA && authB && authC && authD, "distinct concurrent Steam2 auth failed");
+
+    unsigned seenMask = 0;
+    for (int pair = 0; pair < 4; ++pair)
+    {
+        callback = CallbackMsg_t();
+        Check(getCallback(flatPipe, &callback), "missing concurrent callback 205");
+        Check(callback.m_iCallback == 205 && callback.m_pubParam != NULL,
+              "concurrent auth pair did not start with callback 205");
+        GSClientSteam2AcceptPayload multiAccept = {};
+        std::memcpy(&multiAccept, callback.m_pubParam, sizeof(multiAccept));
+        freeCallback(flatPipe);
+
+        uint64_t expectedPairSteamID = 0;
+        unsigned pairBit = 0;
+        if (multiAccept.userID == accountA) { expectedPairSteamID = steamA; pairBit = 1u << 0; }
+        else if (multiAccept.userID == accountB) { expectedPairSteamID = steamB; pairBit = 1u << 1; }
+        else if (multiAccept.userID == accountC) { expectedPairSteamID = steamC; pairBit = 1u << 2; }
+        else if (multiAccept.userID == accountD) { expectedPairSteamID = steamD; pairBit = 1u << 3; }
+        else Fail("callback 205 carried an unknown concurrent accountId");
+        Check(multiAccept.steamID == expectedPairSteamID, "callback 205 concurrent identity mismatch");
+        Check((seenMask & pairBit) == 0, "concurrent account callback pair repeated");
+        seenMask |= pairBit;
+
+        callback = CallbackMsg_t();
+        Check(getCallback(flatPipe, &callback), "missing concurrent callback 201");
+        Check(callback.m_iCallback == 201 && callback.m_cubParam == 16 && callback.m_pubParam != NULL,
+              "callback 205/201 pair interleaved across clients");
+        GSClientApprovePayload multiApprove = {};
+        std::memcpy(&multiApprove, callback.m_pubParam, sizeof(multiApprove));
+        Check(multiApprove.steamID == expectedPairSteamID && multiApprove.ownerSteamID == expectedPairSteamID,
+              "callback 201 concurrent identity mismatch");
+        freeCallback(flatPipe);
+    }
+    Check(seenMask == 0x0fu, "not all concurrent client identities produced one callback pair");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "unexpected callback after concurrent auth pairs");
+    std::puts("[PASS] 4-client concurrent callback pairing and identity payloads");
+
+    // Active duplicate SteamID: reject a second account while A is active.
+    Check(!gsSendSteam2(flatGS, 105, ticketA, sizeof(ticketA), authIP, authPort, NULL, 0),
+          "active duplicate SteamID must reject the new account");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "duplicate SteamID reject queued callbacks");
+
+    // Repeating the exact same account/identity is idempotent and must not
+    // create duplicate approval callbacks.
+    Check(gsSendSteam2(flatGS, accountA, ticketA, sizeof(ticketA), authIP, authPort, NULL, 0),
+          "same account/identity repeated auth should be idempotent");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "idempotent repeated auth queued callbacks");
+
+    // Reusing one active accountId for a different identity must be rejected.
+    Check(!gsSendSteam2(flatGS, accountA, ticketD, sizeof(ticketD), authIP, authPort, NULL, 0),
+          "active accountId identity replacement must be rejected");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "account conflict reject queued callbacks");
+
+    // A stale/mismatched disconnect must not erase A. Prove that by checking
+    // that A remains an active duplicate afterwards.
+    Check(!gsSendUserDisconnect(flatGS, steamB, accountA),
+          "mismatched disconnect identity must be rejected");
+    Check(!gsSendSteam2(flatGS, 105, ticketA, sizeof(ticketA), authIP, authPort, NULL, 0),
+          "mismatched disconnect incorrectly erased the active identity");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "mismatched disconnect path queued callbacks");
+
+    // Correct disconnect of A releases its identity and permits reconnect on a
+    // new accountId.
+    Check(gsSendUserDisconnect(flatGS, steamA, accountA), "correct disconnect of A failed");
+    Check(gsSendSteam2(flatGS, 105, ticketA, sizeof(ticketA), authIP, authPort, NULL, 0),
+          "A identity was not reusable after disconnect");
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 205, "A reconnect missing callback 205");
+    GSClientSteam2AcceptPayload reconnectA = {};
+    std::memcpy(&reconnectA, callback.m_pubParam, sizeof(reconnectA));
+    Check(reconnectA.userID == 105 && reconnectA.steamID == steamA, "A reconnect callback 205 mismatch");
+    freeCallback(flatPipe);
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 201, "A reconnect missing callback 201");
+    GSClientApprovePayload reconnectApproveA = {};
+    std::memcpy(&reconnectApproveA, callback.m_pubParam, sizeof(reconnectApproveA));
+    Check(reconnectApproveA.steamID == steamA, "A reconnect callback 201 mismatch");
+    freeCallback(flatPipe);
+
+    // GSRemoveUserConnect must clean one account without affecting others and
+    // release that SteamID for a later account.
+    Check(gsRemoveUserConnect(flatGS, accountC), "GSRemoveUserConnect(C) failed");
+    Check(gsSendSteam2(flatGS, 107, ticketC, sizeof(ticketC), authIP, authPort, NULL, 0),
+          "C identity was not reusable after GSRemoveUserConnect");
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 205, "C reconnect missing callback 205");
+    GSClientSteam2AcceptPayload reconnectC = {};
+    std::memcpy(&reconnectC, callback.m_pubParam, sizeof(reconnectC));
+    Check(reconnectC.userID == 107 && reconnectC.steamID == steamC, "C reconnect callback 205 mismatch");
+    freeCallback(flatPipe);
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 201, "C reconnect missing callback 201");
+    freeCallback(flatPipe);
+
+    // Disconnect between auth return and callback consumption must remove the
+    // still-pending auth callbacks, so a stale approval cannot resurrect a
+    // disconnected user.
+    const uint32_t hashE = 500000005u;
+    const uint64_t steamE = ClassicSteamID64(hashE);
+    uint8_t ticketE[kClassicTicketSize];
+    MakeClassicTicket(ticketE, hashE);
+    Check(gsSendSteam2(flatGS, 108, ticketE, sizeof(ticketE), authIP, authPort, NULL, 0),
+          "disconnect-during-auth setup failed");
+    Check(gsSendUserDisconnect(flatGS, steamE, 108), "disconnect-during-auth cleanup failed");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "disconnect-during-auth left stale approval callbacks");
+    Check(gsSendSteam2(flatGS, 109, ticketE, sizeof(ticketE), authIP, authPort, NULL, 0),
+          "identity was not reusable after disconnect-during-auth cleanup");
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 205, "E reconnect missing callback 205");
+    freeCallback(flatPipe);
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 201, "E reconnect missing callback 201");
+    freeCallback(flatPipe);
+
+    // If callback 205 is already in flight, disconnect must not invalidate the
+    // payload pointer handed to the caller. It may not revoke that callback, but
+    // it must remove the remaining 201 and release active identity state.
+    const uint32_t hashG = 550000005u;
+    const uint64_t steamG = ClassicSteamID64(hashG);
+    uint8_t ticketG[kClassicTicketSize];
+    MakeClassicTicket(ticketG, hashG);
+    Check(gsSendSteam2(flatGS, 112, ticketG, sizeof(ticketG), authIP, authPort, NULL, 0),
+          "in-flight disconnect setup failed");
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 205 && callback.m_pubParam != NULL,
+          "in-flight disconnect missing callback 205");
+    GSClientSteam2AcceptPayload inFlightAccept = {};
+    std::memcpy(&inFlightAccept, callback.m_pubParam, sizeof(inFlightAccept));
+    Check(inFlightAccept.userID == 112 && inFlightAccept.steamID == steamG,
+          "in-flight callback payload mismatch before disconnect");
+    Check(gsSendUserDisconnect(flatGS, steamG, 112), "in-flight disconnect failed");
+    // The payload must remain valid until the required FreeLastCallback call.
+    GSClientSteam2AcceptPayload inFlightAfterDisconnect = {};
+    std::memcpy(&inFlightAfterDisconnect, callback.m_pubParam, sizeof(inFlightAfterDisconnect));
+    Check(inFlightAfterDisconnect.userID == 112 && inFlightAfterDisconnect.steamID == steamG,
+          "disconnect invalidated an in-flight callback payload");
+    freeCallback(flatPipe);
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "in-flight disconnect left callback 201 queued");
+    Check(gsSendSteam2(flatGS, 113, ticketG, sizeof(ticketG), authIP, authPort, NULL, 0),
+          "identity was not reusable after in-flight disconnect");
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 205, "G reconnect missing callback 205");
+    freeCallback(flatPipe);
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 201, "G reconnect missing callback 201");
+    freeCallback(flatPipe);
+
+    // The account-only removal path must also cancel pending auth callbacks.
+    const uint32_t hashF = 600000006u;
+    const uint64_t steamF = ClassicSteamID64(hashF);
+    uint8_t ticketF[kClassicTicketSize];
+    MakeClassicTicket(ticketF, hashF);
+    Check(gsSendSteam2(flatGS, 110, ticketF, sizeof(ticketF), authIP, authPort, NULL, 0),
+          "GSRemove pending-auth setup failed");
+    Check(gsRemoveUserConnect(flatGS, 110), "GSRemove pending-auth cleanup failed");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "GSRemoveUserConnect left stale approval callbacks");
+    Check(gsSendSteam2(flatGS, 111, ticketF, sizeof(ticketF), authIP, authPort, NULL, 0),
+          "identity was not reusable after GSRemove pending-auth cleanup");
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 205, "F reconnect missing callback 205");
+    freeCallback(flatPipe);
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 201, "F reconnect missing callback 201");
+    freeCallback(flatPipe);
+
+    // Clean all remaining active identities. Missing/repeated disconnect is
+    // intentionally idempotent.
+    Check(gsSendUserDisconnect(flatGS, steamB, accountB), "cleanup B failed");
+    Check(gsSendUserDisconnect(flatGS, steamD, accountD), "cleanup D failed");
+    Check(gsSendUserDisconnect(flatGS, steamA, 105), "cleanup reconnected A failed");
+    Check(gsSendUserDisconnect(flatGS, steamC, 107), "cleanup reconnected C failed");
+    Check(gsSendUserDisconnect(flatGS, steamE, 109), "cleanup reconnected E failed");
+    Check(gsSendUserDisconnect(flatGS, steamG, 113), "cleanup reconnected G failed");
+    Check(gsSendUserDisconnect(flatGS, steamF, 111), "cleanup reconnected F failed");
+    Check(gsSendUserDisconnect(flatGS, steamF, 111), "repeated disconnect should be idempotent");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "cleanup left callbacks queued");
+    std::puts("[PASS] duplicate policy, disconnect isolation, reconnect and pending-auth cleanup");
+
     Check(initiate(flatUser, flatPipe, NULL, 0, 0, 240, 0x7f000001u, 27016, false) == 0,
           "Steam_InitiateGameConnection exact ABI failed");
     terminate(flatUser, flatPipe, 0x7f000001u, 27016);
@@ -420,6 +650,6 @@ int main(int argc, char **argv)
     Check(!gsBLoggedOn(flatGS), "flat Steam_GSLogOff failed");
 
     dlclose(library);
-    std::puts("M3.1 ABI/auth smoke PASS");
+    std::puts("M3.2 ABI/auth/state smoke PASS");
     return 0;
 }

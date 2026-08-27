@@ -47,7 +47,7 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 
 	if(BUILD_TESTING)
 		add_executable(steamclient_abi_smoke ../steamclient_legacy/tests/LegacySteamAbiSmoke.cpp)
-		target_link_libraries(steamclient_abi_smoke PRIVATE dl)
+		target_link_libraries(steamclient_abi_smoke PRIVATE dl pthread)
 		add_test(NAME steamclient_legacy_abi
 			COMMAND steamclient_abi_smoke $<TARGET_FILE:steamclient>)
 	endif()

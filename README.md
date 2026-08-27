@@ -23,7 +23,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-On Linux the build also produces the legacy `libsteamclient.so` compatibility backend and, when testing is enabled, `steamclient_abi_smoke`. The smoke test validates the old SteamClient006 / SteamGameServer002 / SteamUtils001 ABI and flat Steam client exports. It also exercises strict Steam2 authentication: only a structurally valid 152-byte ClassicRevEmu/ClientMod ticket is approved; malformed or unknown Steam2 tickets are rejected without approval callbacks or IP-derived identity fallback.
+On Linux the build also produces the legacy `libsteamclient.so` compatibility backend and, when testing is enabled, `steamclient_abi_smoke`. The smoke test validates the old SteamClient006 / SteamGameServer002 / SteamUtils001 ABI and flat Steam client exports. It exercises strict Steam2 authentication and multi-client state semantics: only a structurally valid 152-byte ClassicRevEmu/ClientMod ticket is approved; malformed or unknown tickets are rejected without IP-derived fallback; concurrent clients keep atomic 205 -> 201 callback pairs; active duplicate SteamIDs are rejected; repeated same-account auth is idempotent; disconnect/remove paths release only the intended identity and cancel still-pending auth callbacks.
 
 ## Usage (loose files)
 
