@@ -20,7 +20,10 @@ Make sure you have at least CMake 3.10 and GCC 4.8 installed and run these comma
 cd Steam/steam
 cmake -B build -DCMAKE_C_FLAGS="-m32" -DCMAKE_CXX_FLAGS="-m32"
 cmake --build build
+ctest --test-dir build --output-on-failure
 ```
+
+On Linux the build also produces the legacy `libsteamclient.so` compatibility backend and, when testing is enabled, `steamclient_abi_smoke`. The smoke test validates the old SteamClient006 / SteamGameServer002 / SteamUtils001 ABI and flat Steam client exports.
 
 ## Usage (loose files)
 

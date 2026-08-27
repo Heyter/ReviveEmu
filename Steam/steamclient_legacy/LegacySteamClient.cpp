@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -27,8 +28,6 @@ namespace
 
 typedef int HSteamPipe;
 typedef int HSteamUser;
-typedef uint64 HSteamCall;
-
 static const HSteamPipe kPipe = 1;
 static const HSteamUser kUser = 1;
 static const int kCallbackSteamServersConnected = 101;
@@ -108,7 +107,7 @@ void QueueCallback(int callback, const void *payload, size_t payloadSize)
     Log("callback queued id=%d size=%u", callback, static_cast<unsigned>(payloadSize));
 }
 
-#pragma pack(push, 4)
+#pragma pack(push, 8)
 struct GSClientApprovePayload
 {
     CSteamID steamID;
@@ -124,7 +123,15 @@ struct GSClientSteam2AcceptPayload
 
 static_assert(sizeof(CSteamID) == 8, "CSteamID ABI must be 8 bytes");
 static_assert(sizeof(GSClientApprovePayload) == 16, "GSClientApprove callback payload ABI must be 16 bytes");
-static_assert(sizeof(GSClientSteam2AcceptPayload) == 12, "GSClientSteam2Accept callback payload ABI must be 12 bytes on legacy x86 ABI");
+static_assert(sizeof(void *) == 4 || sizeof(void *) == 8, "unsupported pointer size");
+static_assert(sizeof(CallbackMsg_t) == (sizeof(void *) == 4 ? 16u : 24u),
+              "CallbackMsg_t ABI layout mismatch");
+static_assert(sizeof(void *) != 4 || offsetof(CallbackMsg_t, m_pubParam) == 8,
+              "CallbackMsg_t parameter pointer offset must be 8 on legacy x86");
+static_assert(sizeof(void *) != 4 || offsetof(CallbackMsg_t, m_cubParam) == 12,
+              "CallbackMsg_t parameter size offset must be 12 on legacy x86");
+static_assert(sizeof(GSClientSteam2AcceptPayload) == (sizeof(void *) == 4 ? 12u : 16u),
+              "GSClientSteam2Accept callback payload ABI mismatch");
 
 void QueueClientApprove(const CSteamID &steamID)
 {
@@ -179,19 +186,19 @@ public:
     virtual bool GSRemoveUserConnect(uint32 accountId);
     virtual bool GSSendUserDisconnect(CSteamID steamID, uint32 accountId);
     virtual bool GSSendUserStatusResponse(CSteamID steamID, int secondsConnected, int secondsSinceLast);
-    virtual void Obsolete_GSSetStatus(int players, uint32 serverFlags, int botPlayers, int maxPlayers,
-                              int serverIP, int serverPort, const char *serverName,
-                              const char *mapName, const char *gameDir, const char *version);
+    virtual bool Obsolete_GSSetStatus(int32 appIdServed, uint32 serverFlags, int players, int maxPlayers,
+                              int botPlayers, int gamePort, const char *serverName,
+                              const char *gameDir, const char *mapName, const char *version);
     virtual bool GSUpdateStatus(int players, int maxPlayers, int botPlayers, const char *serverName, const char *mapName);
     virtual bool BSecure();
     virtual CSteamID GetSteamID();
-    virtual bool GSSetServerType(int serverMode, uint32 serverIP, uint32 serverFlags, uint32 gameAppId,
+    virtual bool GSSetServerType(int32 gameAppId, uint32 serverFlags, uint32 gameIP, uint32 gamePort,
                          const char *gameDir, const char *version);
-    virtual bool GSSetServerType2(int serverMode, uint32 serverIP, uint32 serverFlags,
+    virtual bool GSSetServerType2(int32 gameAppId, uint32 serverFlags, uint32 gameIP,
                           uint16 gamePort, uint16 spectatorPort, uint16 queryPort,
                           const char *gameDir, const char *version, bool lanMode);
     virtual bool GSUpdateStatus2(int players, int maxPlayers, int botPlayers,
-                         const char *serverName, const char *mapName, const char *spectatorServerName);
+                         const char *serverName, const char *spectatorServerName, const char *mapName);
     virtual bool GSCreateUnauthenticatedUser(CSteamID *steamID);
     virtual bool GSSetUserData(CSteamID steamID, const char *playerName, uint32 score);
     virtual void GSUpdateSpectatorPort(uint16 spectatorPort);
@@ -205,14 +212,6 @@ public:
     virtual uint32 GetSecondsSinceComputerActive() { return 0; }
     virtual EUniverse GetConnectedUniverse() { return k_EUniversePublic; }
     virtual uint32 GetServerRealTime() { return static_cast<uint32>(std::time(NULL)); }
-    virtual const char *GetIPCountry() { return "US"; }
-    virtual bool GetImageSize(int, uint32 *width, uint32 *height)
-    {
-        if (width) *width = 0;
-        if (height) *height = 0;
-        return false;
-    }
-    virtual bool GetImageRGBA(int, uint8 *, int) { return false; }
 };
 
 class CSteamMasterServerUpdater001
@@ -413,9 +412,15 @@ bool CSteamGameServer002::GSSendUserStatusResponse(CSteamID, int, int)
     return true;
 }
 
-void CSteamGameServer002::Obsolete_GSSetStatus(int, uint32, int, int, int, int,
-                                               const char *, const char *, const char *, const char *)
+bool CSteamGameServer002::Obsolete_GSSetStatus(int32 appIdServed, uint32 serverFlags,
+                                               int players, int maxPlayers, int botPlayers, int gamePort,
+                                               const char *serverName, const char *gameDir,
+                                               const char *mapName, const char *version)
 {
+    Log("Obsolete_GSSetStatus app=%d flags=0x%08x players=%d/%d bots=%d port=%d name=%s dir=%s map=%s version=%s",
+        appIdServed, serverFlags, players, maxPlayers, botPlayers, gamePort,
+        serverName ? serverName : "", gameDir ? gameDir : "", mapName ? mapName : "", version ? version : "");
+    return true;
 }
 
 bool CSteamGameServer002::GSUpdateStatus(int, int, int, const char *, const char *)
@@ -433,30 +438,37 @@ CSteamID CSteamGameServer002::GetSteamID()
     return MakeServerID();
 }
 
-bool CSteamGameServer002::GSSetServerType(int serverMode, uint32 serverIP, uint32 serverFlags,
-                                          uint32 gameAppId, const char *gameDir, const char *version)
+bool CSteamGameServer002::GSSetServerType(int32 gameAppId, uint32 serverFlags, uint32 gameIP,
+                                          uint32 gamePort, const char *gameDir, const char *version)
 {
-    Log("GSSetServerType mode=%d ip=0x%08x flags=0x%08x app=%u dir=%s version=%s",
-        serverMode, serverIP, serverFlags, gameAppId,
+    if (gameIP) g_localIP = gameIP;
+    if (gamePort) g_localPort = static_cast<uint16>(gamePort);
+    Log("GSSetServerType app=%d flags=0x%08x ip=0x%08x game=%u dir=%s version=%s",
+        gameAppId, serverFlags, gameIP, gamePort,
         gameDir ? gameDir : "", version ? version : "");
     return true;
 }
 
-bool CSteamGameServer002::GSSetServerType2(int serverMode, uint32 serverIP, uint32 serverFlags,
+bool CSteamGameServer002::GSSetServerType2(int32 gameAppId, uint32 serverFlags, uint32 gameIP,
                                            uint16 gamePort, uint16 spectatorPort, uint16 queryPort,
                                            const char *gameDir, const char *version, bool lanMode)
 {
-    if (serverIP) g_localIP = serverIP;
+    if (gameIP) g_localIP = gameIP;
     if (gamePort) g_localPort = gamePort;
-    Log("GSSetServerType2 mode=%d ip=0x%08x flags=0x%08x game=%u spectator=%u query=%u dir=%s version=%s lan=%d",
-        serverMode, serverIP, serverFlags,
+    Log("GSSetServerType2 app=%d flags=0x%08x ip=0x%08x game=%u spectator=%u query=%u dir=%s version=%s lan=%d",
+        gameAppId, serverFlags, gameIP,
         static_cast<unsigned>(gamePort), static_cast<unsigned>(spectatorPort), static_cast<unsigned>(queryPort),
         gameDir ? gameDir : "", version ? version : "", lanMode ? 1 : 0);
     return true;
 }
 
-bool CSteamGameServer002::GSUpdateStatus2(int, int, int, const char *, const char *, const char *)
+bool CSteamGameServer002::GSUpdateStatus2(int players, int maxPlayers, int botPlayers,
+                                          const char *serverName, const char *spectatorServerName,
+                                          const char *mapName)
 {
+    Log("GSUpdateStatus2 players=%d/%d bots=%d name=%s spectator=%s map=%s",
+        players, maxPlayers, botPlayers, serverName ? serverName : "",
+        spectatorServerName ? spectatorServerName : "", mapName ? mapName : "");
     return true;
 }
 
@@ -503,7 +515,7 @@ REVIVE_EXPORT void *CreateInterface(const char *name, int *returnCode)
     return result;
 }
 
-REVIVE_EXPORT bool Steam_BGetCallback(HSteamPipe pipe, CallbackMsg_t *msg, HSteamCall *call)
+REVIVE_EXPORT bool Steam_BGetCallback(HSteamPipe pipe, CallbackMsg_t *msg)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!msg || pipe != kPipe || g_callbackInFlight || g_callbacks.empty())
@@ -514,8 +526,6 @@ REVIVE_EXPORT bool Steam_BGetCallback(HSteamPipe pipe, CallbackMsg_t *msg, HStea
     msg->m_iCallback = item.callback;
     msg->m_pubParam = item.payload.empty() ? NULL : item.payload.data();
     msg->m_cubParam = static_cast<int>(item.payload.size());
-    if (call) *call = 0;
-
     g_currentCallbackUser = item.user;
     g_callbackInFlight = true;
     Log("Steam_BGetCallback id=%d size=%d", msg->m_iCallback, msg->m_cubParam);
@@ -530,11 +540,22 @@ REVIVE_EXPORT void Steam_FreeLastCallback(HSteamPipe pipe)
     g_callbackInFlight = false;
 }
 
+REVIVE_EXPORT bool Steam_GetAPICallResult(HSteamPipe, uint64, void *, int, int, bool *failed)
+{
+    if (failed) *failed = true;
+    return false;
+}
+
 REVIVE_EXPORT HSteamUser Steam_GetHSteamUserCurrent()
 {
     return g_currentCallbackUser ? g_currentCallbackUser : kUser;
 }
 
+REVIVE_EXPORT void Steam_RunCallbacks(HSteamPipe pipe, bool gameServerCallbacks)
+{
+    Log("Steam_RunCallbacks pipe=%d game_server=%d noop=1 callbacks_use_Steam_BGetCallback=1",
+        pipe, gameServerCallbacks ? 1 : 0);
+}
 REVIVE_EXPORT void Steam_RegisterInterfaceFuncs(void *) {}
 REVIVE_EXPORT bool Steam_BConnected(HSteamUser, HSteamPipe) { return true; }
 REVIVE_EXPORT bool Steam_BLoggedOn(HSteamUser, HSteamPipe) { return g_loggedOn; }
@@ -542,38 +563,127 @@ REVIVE_EXPORT HSteamPipe Steam_CreateSteamPipe() { return kPipe; }
 REVIVE_EXPORT bool Steam_BReleaseSteamPipe(HSteamPipe) { return true; }
 REVIVE_EXPORT HSteamUser Steam_CreateGlobalUser(HSteamPipe *pipe) { return g_client.CreateGlobalUser(pipe); }
 REVIVE_EXPORT HSteamUser Steam_ConnectToGlobalUser(HSteamPipe pipe) { return g_client.ConnectToGlobalUser(pipe); }
-REVIVE_EXPORT HSteamUser Steam_CreateLocalUser(HSteamPipe *pipe) { return g_client.CreateLocalUser(pipe); }
+REVIVE_EXPORT HSteamUser Steam_CreateLocalUser(HSteamPipe *pipe, EAccountType) { return g_client.CreateLocalUser(pipe); }
 REVIVE_EXPORT void Steam_ReleaseUser(HSteamPipe pipe, HSteamUser user) { g_client.ReleaseUser(pipe, user); }
 REVIVE_EXPORT void Steam_SetLocalIPBinding(uint32 ip, uint16 port) { g_client.SetLocalIPBinding(ip, port); }
-REVIVE_EXPORT HSteamUser Steam_GetGSHandle() { return kUser; }
+REVIVE_EXPORT int Steam_GSGetSteamGameConnectToken(HSteamUser, HSteamPipe, void *, int) { return 0; }
+REVIVE_EXPORT void *Steam_GetGSHandle(HSteamUser user, HSteamPipe pipe)
+{
+    return g_client.GetISteamGameServer(user, pipe, "SteamGameServer002");
+}
 REVIVE_EXPORT void Steam_LogOn(HSteamUser, HSteamPipe, uint64) { g_loggedOn = true; }
 REVIVE_EXPORT void Steam_LogOff(HSteamUser, HSteamPipe) { g_loggedOn = false; }
-REVIVE_EXPORT bool Steam_GSBLoggedOn(HSteamUser, HSteamPipe) { return g_gameServer.BLoggedOn(); }
-REVIVE_EXPORT bool Steam_GSBSecure(HSteamUser, HSteamPipe) { return g_gameServer.BSecure(); }
-REVIVE_EXPORT void Steam_GSLogOn(HSteamUser, HSteamPipe) { g_gameServer.LogOn(); }
-REVIVE_EXPORT void Steam_GSLogOff(HSteamUser, HSteamPipe) { g_gameServer.LogOff(); }
-REVIVE_EXPORT void Steam_GSSetSpawnCount(HSteamUser, HSteamPipe, uint32 count) { g_gameServer.GSSetSpawnCount(count); }
-REVIVE_EXPORT bool Steam_GSGetSteam2GetEncryptionKeyToSendToNewClient(HSteamUser, HSteamPipe, void *key, uint32 *size, uint32 maxSize)
+
+namespace
 {
-    return g_gameServer.GSGetSteam2GetEncryptionKeyToSendToNewClient(key, size, maxSize);
-}
-REVIVE_EXPORT bool Steam_GSRemoveUserConnect(HSteamUser, HSteamPipe, uint32 accountId) { return g_gameServer.GSRemoveUserConnect(accountId); }
-REVIVE_EXPORT bool Steam_GSSendUserDisconnect(HSteamUser, HSteamPipe, CSteamID id, uint32 accountId) { return g_gameServer.GSSendUserDisconnect(id, accountId); }
-REVIVE_EXPORT bool Steam_GSSendUserStatusResponse(HSteamUser, HSteamPipe, CSteamID id, int a, int b) { return g_gameServer.GSSendUserStatusResponse(id, a, b); }
-REVIVE_EXPORT CSteamID Steam_GSGetSteamID(HSteamUser, HSteamPipe) { return g_gameServer.GetSteamID(); }
-REVIVE_EXPORT bool Steam_GSSetServerType(HSteamUser, HSteamPipe, int mode, uint32 ip, uint32 flags, uint32 appId, const char *dir, const char *version)
+CSteamGameServer002 *GameServerFromHandle(void *handle)
 {
-    return g_gameServer.GSSetServerType(mode, ip, flags, appId, dir, version);
+    return handle == &g_gameServer ? &g_gameServer : NULL;
 }
-REVIVE_EXPORT bool Steam_GSUpdateStatus(HSteamUser, HSteamPipe, int players, int maxPlayers, int bots, const char *name, const char *map)
+}
+
+REVIVE_EXPORT bool Steam_GSBLoggedOn(void *handle)
 {
-    return g_gameServer.GSUpdateStatus(players, maxPlayers, bots, name, map);
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->BLoggedOn() : false;
 }
-REVIVE_EXPORT bool Steam_InitiateGameConnection(void *, int, CSteamID, uint32, uint16, bool) { return true; }
-REVIVE_EXPORT void Steam_TerminateGameConnection(uint32, uint16) {}
+REVIVE_EXPORT bool Steam_GSBSecure(void *handle)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->BSecure() : false;
+}
+REVIVE_EXPORT void Steam_GSLogOn(void *handle)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    if (server) server->LogOn();
+}
+REVIVE_EXPORT void Steam_GSLogOff(void *handle)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    if (server) server->LogOff();
+}
+REVIVE_EXPORT void Steam_GSSetSpawnCount(void *handle, uint32 count)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    if (server) server->GSSetSpawnCount(count);
+}
+REVIVE_EXPORT bool Steam_GSGetSteam2GetEncryptionKeyToSendToNewClient(void *handle, void *key, uint32 *size, uint32 maxSize)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->GSGetSteam2GetEncryptionKeyToSendToNewClient(key, size, maxSize) : false;
+}
+REVIVE_EXPORT bool Steam_GSSendSteam2UserConnect(void *handle, uint32 accountId, const void *rawKey,
+                                                 uint32 rawKeyLen, uint32 ip, uint16 port,
+                                                 const void *cookie, uint32 cookieLen)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->GSSendSteam2UserConnect(accountId, rawKey, rawKeyLen, ip, port, cookie, cookieLen) : false;
+}
+REVIVE_EXPORT bool Steam_GSSendSteam3UserConnect(void *handle, uint64 steamID, uint32 ip,
+                                                 const void *cookie, uint32 cookieLen)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->GSSendSteam3UserConnect(CSteamID(steamID), ip, cookie, cookieLen) : false;
+}
+REVIVE_EXPORT bool Steam_GSRemoveUserConnect(void *handle, uint32 accountId)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->GSRemoveUserConnect(accountId) : false;
+}
+REVIVE_EXPORT bool Steam_GSSendUserDisconnect(void *handle, uint64 steamID, uint32 accountId)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->GSSendUserDisconnect(CSteamID(steamID), accountId) : false;
+}
+REVIVE_EXPORT bool Steam_GSSendUserStatusResponse(void *handle, uint64 steamID, int secondsConnected, int secondsSinceLast)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->GSSendUserStatusResponse(CSteamID(steamID), secondsConnected, secondsSinceLast) : false;
+}
+REVIVE_EXPORT uint64 Steam_GSGetSteamID(void *handle)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->GetSteamID().ConvertToUint64() : 0;
+}
+REVIVE_EXPORT bool Steam_GSSetStatus(void *handle, int32 appIdServed, uint32 serverFlags,
+                                     int players, int maxPlayers, int botPlayers, int gamePort,
+                                     const char *serverName, const char *gameDir,
+                                     const char *mapName, const char *version)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->Obsolete_GSSetStatus(appIdServed, serverFlags, players, maxPlayers, botPlayers,
+                                                 gamePort, serverName, gameDir, mapName, version) : false;
+}
+REVIVE_EXPORT bool Steam_GSSetServerType(void *handle, int32 appIdServed, uint32 serverFlags,
+                                         uint32 gameIP, uint32 gamePort,
+                                         const char *gameDir, const char *version)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->GSSetServerType(appIdServed, serverFlags, gameIP, gamePort, gameDir, version) : false;
+}
+REVIVE_EXPORT bool Steam_GSUpdateStatus(void *handle, int players, int maxPlayers, int bots,
+                                       const char *name, const char *map)
+{
+    CSteamGameServer002 *server = GameServerFromHandle(handle);
+    return server ? server->GSUpdateStatus(players, maxPlayers, bots, name, map) : false;
+}
+REVIVE_EXPORT int Steam_InitiateGameConnection(HSteamUser user, HSteamPipe pipe, void *blob, int maxBlob,
+                                                uint64 steamID, int gameAppID, uint32 serverIP,
+                                                uint16 serverPort, bool secure)
+{
+    Log("Steam_InitiateGameConnection user=%d pipe=%d blob=%p max=%d steamid64=%llu app=%d ip=0x%08x port=%u secure=%d unsupported=1",
+        user, pipe, blob, maxBlob, static_cast<unsigned long long>(steamID), gameAppID, serverIP,
+        static_cast<unsigned>(serverPort), secure ? 1 : 0);
+    return 0;
+}
+REVIVE_EXPORT void Steam_TerminateGameConnection(HSteamUser user, HSteamPipe pipe, uint32 serverIP, uint16 serverPort)
+{
+    Log("Steam_TerminateGameConnection user=%d pipe=%d ip=0x%08x port=%u",
+        user, pipe, serverIP, static_cast<unsigned>(serverPort));
+}
 
 // Marker used by Docker/startup validation without depending on symbol tools in runtime.
 REVIVE_EXPORT const char *REVive_LegacySteamClient_BuildMarker()
 {
-    return "REVive legacy SteamClient006 backend M2.1";
+    return "REVive legacy SteamClient006 backend M2.3-dev.2";
 }

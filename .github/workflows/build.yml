@@ -89,12 +89,19 @@ jobs:
         working-directory: Steam/steam
         run: cmake --build ./build
 
+      - name: Run legacy ABI smoke tests
+        shell: bash
+        working-directory: Steam/steam
+        run: ctest --test-dir ./build --output-on-failure
+
       - name: Prepare files for packaging
         shell: bash
         run: |
           mkdir ./artifacts
           cp ./Steam/steam/build/libsteam.so ./artifacts/libsteam.so
           cp ./Steam/steam/build/libsteamvalidateuseridtickets.so ./artifacts/libsteamvalidateuseridtickets.so
+          cp ./Steam/steam/build/libsteamclient.so ./artifacts/libsteamclient.so
+          cp ./Steam/steam/build/steamclient_abi_smoke ./artifacts/steamclient_abi_smoke
           cp ./Steam/steam/rev.ini ./artifacts/rev.ini
           cp ./Steam/steam/revApps.ini ./artifacts/revApps.ini
 

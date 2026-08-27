@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(Steam)
 
+include(CTest)
+
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 11)
 
@@ -42,4 +44,11 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 	target_compile_definitions(steamclient PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
 	target_link_libraries(steamclient PRIVATE dl pthread)
 	set_target_properties(steamclient PROPERTIES OUTPUT_NAME steamclient)
+
+	if(BUILD_TESTING)
+		add_executable(steamclient_abi_smoke ../steamclient_legacy/tests/LegacySteamAbiSmoke.cpp)
+		target_link_libraries(steamclient_abi_smoke PRIVATE dl)
+		add_test(NAME steamclient_legacy_abi
+			COMMAND steamclient_abi_smoke $<TARGET_FILE:steamclient>)
+	endif()
 endif()
