@@ -8,7 +8,7 @@ namespace legacy
 {
 
 Steam2AuthAttempt::Steam2AuthAttempt()
-    : generation(0), createdReservation(false)
+    : generation(0), createdReservation(false), capacityExceeded(false)
 {
 }
 
@@ -19,6 +19,15 @@ Steam2AuthAttempt BeginSteam2AuthLocked(RuntimeState &state, uint32 accountId)
     if (existing != state.steam2Users.end())
     {
         attempt.generation = existing->second.generation;
+        return attempt;
+    }
+
+    if (state.steam2Users.size() >= kMaxSteam2Sessions)
+    {
+        attempt.capacityExceeded = true;
+        Log("Auth", "Steam2 auth reservation rejected account=%u sessions=%u limit=%u reason=session_capacity",
+            accountId, static_cast<unsigned>(state.steam2Users.size()),
+            static_cast<unsigned>(kMaxSteam2Sessions));
         return attempt;
     }
 
@@ -114,11 +123,13 @@ const char *Steam2RegistrationResultString(Steam2RegistrationResult result)
         case kSteam2RegistrationActiveReplay: return "active_ticket_replay";
         case kSteam2RegistrationDuplicateSteamID: return "duplicate_steamid";
         case kSteam2RegistrationAuthCanceled: return "auth_canceled";
+        case kSteam2RegistrationCallbackQueueFull: return "callback_queue_full";
         default: return "unknown";
     }
 }
 
-size_t RemoveSteam2UserLocked(RuntimeState &state, uint32 accountId, uint64 *removedGeneration)
+size_t RemoveSteam2UserLocked(RuntimeState &state, uint32 accountId, uint64 *removedGeneration,
+                              const char *reason)
 {
     std::map<uint32, Steam2AuthSession>::const_iterator it = state.steam2Users.find(accountId);
     if (it == state.steam2Users.end())
@@ -126,7 +137,7 @@ size_t RemoveSteam2UserLocked(RuntimeState &state, uint32 accountId, uint64 *rem
     const uint64 generation = it->second.generation;
     if (removedGeneration)
         *removedGeneration = generation;
-    return RemoveClientLifecycleLocked(state, accountId, generation, "remove_user_connect");
+    return RemoveClientLifecycleLocked(state, accountId, generation, reason ? reason : "remove_user_connect");
 }
 
 Steam2DisconnectResult DisconnectSteam2UserLocked(RuntimeState &state, uint32 accountId,

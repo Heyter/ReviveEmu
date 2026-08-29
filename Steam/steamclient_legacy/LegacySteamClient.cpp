@@ -316,5 +316,5 @@ REVIVE_EXPORT void Steam_TerminateGameConnection(HSteamUser user, HSteamPipe pip
 
 REVIVE_EXPORT const char *REVive_LegacySteamClient_BuildMarker()
 {
-    return "REVive legacy SteamClient006 backend M3.8-dev.1";
+    return "REVive legacy SteamClient006 backend M3.9-dev.1";
 }

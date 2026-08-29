@@ -206,6 +206,13 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
         attempt = BeginSteam2AuthLocked(state, accountId);
     }
 
+    if (attempt.capacityExceeded)
+    {
+        Log("Auth", "Steam2 auth REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u reason=session_capacity identity_source=ticket",
+            accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen);
+        return false;
+    }
+
     auth::AuthTicketIdentity identity;
     const auth::AuthTicketResult ticketResult = auth::ParseAndValidateAuthTicket(rawKey, rawKeyLen, &identity);
     const auth::AuthTicketType detectedType = auth::DetectAuthTicketType(rawKey, rawKeyLen);
@@ -234,8 +241,13 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
         {
             // Identity binding and the 205 -> 201 callback pair are one transaction.
             // The generation token prevents stale callbacks from a prior account reuse
-            // from advancing a newly-created client session.
-            QueueSteam2AuthCallbacksLocked(state, accountId, steamID, sessionGeneration);
+            // from advancing a newly-created client session. A saturated callback
+            // queue rolls the registration back instead of leaving AUTH_PENDING state.
+            if (!QueueSteam2AuthCallbacksLocked(state, accountId, steamID, sessionGeneration))
+            {
+                RemoveSteam2UserLocked(state, accountId, NULL, "callback_queue_full");
+                registration = kSteam2RegistrationCallbackQueueFull;
+            }
         }
     }
 
@@ -243,7 +255,8 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
     if (registration == kSteam2RegistrationAccountConflict ||
         registration == kSteam2RegistrationActiveReplay ||
         registration == kSteam2RegistrationDuplicateSteamID ||
-        registration == kSteam2RegistrationAuthCanceled)
+        registration == kSteam2RegistrationAuthCanceled ||
+        registration == kSteam2RegistrationCallbackQueueFull)
     {
         Log("Auth", "Steam2 auth REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u reason=%s type=%s identity_source=ticket steam2=%s steamid64=%llu ticket_fp=%016llx",
             accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
@@ -280,8 +293,7 @@ bool CSteamGameServer002::GSSendSteam3UserConnect(CSteamID steamID, uint32 ip, c
     char steam2[64];
     Log("Auth", "GSSendSteam3UserConnect ip=0x%08x steam2=%s", ip,
         Steam2String(steamID, steam2, sizeof(steam2)));
-    QueueClientApprove(steamID);
-    return true;
+    return QueueClientApprove(steamID);
 }
 
 bool CSteamGameServer002::GSRemoveUserConnect(uint32 accountId)

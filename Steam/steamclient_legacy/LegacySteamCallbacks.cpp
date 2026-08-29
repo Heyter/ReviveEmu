@@ -33,9 +33,23 @@ static_assert(sizeof(void *) != 4 || offsetof(CallbackMsg_t, m_cubParam) == 12,
 static_assert(sizeof(GSClientSteam2AcceptPayload) == (sizeof(void *) == 4 ? 12u : 16u),
               "GSClientSteam2Accept callback payload ABI mismatch");
 
-void QueueCallbackLocked(RuntimeState &state, int callback, const void *payload, size_t payloadSize,
+bool QueueCallbackLocked(RuntimeState &state, int callback, const void *payload, size_t payloadSize,
                          uint32 accountId, uint64 steamID, bool authCallback, uint64 generation)
 {
+    if (payloadSize > kMaxCallbackPayloadBytes || (payloadSize != 0 && !payload))
+    {
+        Log("Callback", "callback rejected id=%d size=%u reason=invalid_payload", callback,
+            static_cast<unsigned>(payloadSize));
+        return false;
+    }
+    if (state.callbacks.size() >= kMaxQueuedCallbacks)
+    {
+        Log("Callback", "callback rejected id=%d size=%u queued=%u limit=%u reason=queue_full", callback,
+            static_cast<unsigned>(payloadSize), static_cast<unsigned>(state.callbacks.size()),
+            static_cast<unsigned>(kMaxQueuedCallbacks));
+        return false;
+    }
+
     QueuedCallback item;
     item.user = kUser;
     item.callback = callback;
@@ -51,38 +65,59 @@ void QueueCallbackLocked(RuntimeState &state, int callback, const void *payload,
 
     state.callbacks.push_back(item);
     Log("Callback", "callback queued id=%d size=%u", callback, static_cast<unsigned>(payloadSize));
+    return true;
 }
 
-void QueueCallback(int callback, const void *payload, size_t payloadSize)
+bool QueueCallback(int callback, const void *payload, size_t payloadSize)
 {
     RuntimeState &state = Runtime();
     std::lock_guard<std::mutex> lock(state.mutex);
-    QueueCallbackLocked(state, callback, payload, payloadSize, 0, 0, false, 0);
+    return QueueCallbackLocked(state, callback, payload, payloadSize, 0, 0, false, 0);
 }
 
-void QueueClientApprove(const CSteamID &steamID)
+bool QueueClientApprove(const CSteamID &steamID)
 {
     GSClientApprovePayload payload;
     payload.steamID = steamID;
     payload.ownerSteamID = steamID;
-    QueueCallback(kCallbackGSClientApprove, &payload, sizeof(payload));
+    return QueueCallback(kCallbackGSClientApprove, &payload, sizeof(payload));
 }
 
-void QueueSteam2AuthCallbacksLocked(RuntimeState &state, uint32 accountId, const CSteamID &steamID, uint64 generation)
+bool QueueSteam2AuthCallbacksLocked(RuntimeState &state, uint32 accountId, const CSteamID &steamID, uint64 generation)
 {
+    // A Steam2 authentication is only useful if both legacy callbacks can be
+    // queued. Reserve capacity for the pair before pushing either item so an
+    // abusive queue cannot leave a half-delivered 205 -> 201 transaction.
+    if (state.callbacks.size() > kMaxQueuedCallbacks - 2)
+    {
+        Log("Callback", "auth callback pair rejected account=%u generation=%llu queued=%u limit=%u reason=queue_full",
+            accountId, static_cast<unsigned long long>(generation),
+            static_cast<unsigned>(state.callbacks.size()), static_cast<unsigned>(kMaxQueuedCallbacks));
+        return false;
+    }
+
     const uint64 steamID64 = steamID.ConvertToUint64();
 
     GSClientSteam2AcceptPayload acceptPayload;
     acceptPayload.userID = accountId;
     acceptPayload.steamID = steamID64;
-    QueueCallbackLocked(state, kCallbackGSClientSteam2Accept, &acceptPayload, sizeof(acceptPayload),
-                        accountId, steamID64, true, generation);
+    if (!QueueCallbackLocked(state, kCallbackGSClientSteam2Accept, &acceptPayload, sizeof(acceptPayload),
+                             accountId, steamID64, true, generation))
+        return false;
 
     GSClientApprovePayload approvePayload;
     approvePayload.steamID = steamID;
     approvePayload.ownerSteamID = steamID;
-    QueueCallbackLocked(state, kCallbackGSClientApprove, &approvePayload, sizeof(approvePayload),
-                        accountId, steamID64, true, generation);
+    if (!QueueCallbackLocked(state, kCallbackGSClientApprove, &approvePayload, sizeof(approvePayload),
+                             accountId, steamID64, true, generation))
+    {
+        // The preflight above makes this impossible unless a future payload
+        // rule changes. Keep rollback explicit so the pair remains atomic.
+        if (!state.callbacks.empty())
+            state.callbacks.pop_back();
+        return false;
+    }
+    return true;
 }
 
 size_t RemovePendingAuthCallbacksLocked(RuntimeState &state, uint32 accountId, uint64 generation)

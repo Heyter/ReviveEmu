@@ -242,8 +242,8 @@ int main(int argc, char **argv)
     BuildMarkerFn buildMarker = Sym<BuildMarkerFn>(library, "REVive_LegacySteamClient_BuildMarker");
 
     const char *marker = buildMarker();
-    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.8-dev.1") == 0,
-          "unexpected M3.8 build marker");
+    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.9-dev.1") == 0,
+          "unexpected M3.9 build marker");
 
     int rc = -1;
     void *client = createInterface("SteamClient006", &rc);
@@ -739,6 +739,55 @@ int main(int argc, char **argv)
     Check(!getCallback(flatPipe, &callback), "cleanup left callbacks queued");
     std::puts("[PASS] duplicate policy, disconnect isolation, reconnect and pending-auth cleanup");
 
+    // M3.9 public-ABI saturation regression. Fill the bounded callback queue
+    // through SteamGameServer002::SendSteam3UserConnect, prove the next item
+    // and a Steam2 auth pair are rejected, then drain and retry that same
+    // Steam2 account. A successful retry proves the queue-full auth path did
+    // not leave a half-authenticated reservation behind.
+    typedef bool (*GSSendSteam3VFn)(void *, CSteamID, uint32_t, const void *, uint32_t);
+    Check(setenv("REVIVE_STEAMCLIENT_LOG", "/dev/null", 1) == 0, "failed to mute saturation logging");
+    size_t saturatedCallbacks = 0;
+    CSteamID saturationSteamID = {};
+    saturationSteamID.value = 76561198000000001ULL;
+    while (saturatedCallbacks < 2048 &&
+           VSlot<GSSendSteam3VFn>(cppGS, kGameServer002SendSteam3UserConnect)(
+               cppGS, saturationSteamID, authIP, NULL, 0))
+    {
+        ++saturatedCallbacks;
+    }
+    Check(saturatedCallbacks == 1024, "M3.9 callback queue limit is not 1024");
+
+    const uint32_t queueHash = 700000007u;
+    const uint64_t queueSteamID = ClassicSteamID64(queueHash);
+    uint8_t queueTicket[kClassicTicketSize];
+    MakeClassicTicket(queueTicket, queueHash);
+    Check(!gsSendSteam2(flatGS, 120, queueTicket, sizeof(queueTicket), authIP, authPort, NULL, 0),
+          "Steam2 auth unexpectedly succeeded with a saturated callback queue");
+
+    for (size_t i = 0; i < saturatedCallbacks; ++i)
+    {
+        callback = CallbackMsg_t();
+        Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 201,
+              "failed to drain saturated compatibility callback queue");
+        freeCallback(flatPipe);
+    }
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "callback saturation drain left queued data");
+
+    Check(setenv("REVIVE_STEAMCLIENT_LOG", tracePath, 1) == 0, "failed to restore ABI trace log path");
+    Check(gsSendSteam2(flatGS, 120, queueTicket, sizeof(queueTicket), authIP, authPort, NULL, 0),
+          "Steam2 account was not reusable after callback-queue rollback");
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 205,
+          "queue-full retry missing callback 205");
+    freeCallback(flatPipe);
+    callback = CallbackMsg_t();
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 201,
+          "queue-full retry missing callback 201");
+    freeCallback(flatPipe);
+    Check(gsSendUserDisconnect(flatGS, queueSteamID, 120), "queue-full retry cleanup failed");
+    std::puts("[PASS] bounded callback queue rollback through public Steam ABI");
+
     Check(initiate(flatUser, flatPipe, NULL, 0, 0, 240, 0x7f000001u, 27016, false) == 0,
           "Steam_InitiateGameConnection exact ABI failed");
     terminate(flatUser, flatPipe, 0x7f000001u, 27016);
@@ -777,9 +826,9 @@ int main(int argc, char **argv)
     Check(CountSubstring(trace, "first_call surface=flat name=Steam_RunCallbacks ") == 1,
           "ABI trace must record noisy calls only once");
     std::remove(tracePath);
-    std::puts("[PASS] M3.8 ABI/auth/lifecycle/multi-client regression with first-call tracing");
+    std::puts("[PASS] M3.9 ABI/auth/lifecycle/multi-client regression with first-call tracing");
 
     dlclose(library);
-    std::puts("M3.8 ABI/auth/lifecycle smoke PASS");
+    std::puts("M3.9 ABI/auth/lifecycle smoke PASS");
     return 0;
 }

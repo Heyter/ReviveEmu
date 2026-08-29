@@ -26,6 +26,13 @@ static const int kCallbackSteamServersConnected = 101;
 static const int kCallbackGSClientApprove = 201;
 static const int kCallbackGSClientSteam2Accept = 205;
 
+// Hard safety ceilings for attacker-controlled connection churn. The real
+// Build 4100 server is configured for 32 players, so these limits leave ample
+// headroom while keeping state and callback memory strictly bounded.
+static const size_t kMaxSteam2Sessions = 256;
+static const size_t kMaxQueuedCallbacks = 1024;
+static const size_t kMaxCallbackPayloadBytes = 4096;
+
 struct CallbackMsg_t
 {
     HSteamUser m_hSteamUser;

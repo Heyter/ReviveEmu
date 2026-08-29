@@ -15,7 +15,8 @@ enum Steam2RegistrationResult
     kSteam2RegistrationAccountConflict,
     kSteam2RegistrationActiveReplay,
     kSteam2RegistrationDuplicateSteamID,
-    kSteam2RegistrationAuthCanceled
+    kSteam2RegistrationAuthCanceled,
+    kSteam2RegistrationCallbackQueueFull
 };
 
 enum Steam2DisconnectResult
@@ -32,6 +33,7 @@ struct Steam2AuthAttempt
 
     uint64 generation;
     bool createdReservation;
+    bool capacityExceeded;
 };
 
 Steam2AuthAttempt BeginSteam2AuthLocked(RuntimeState &state, uint32 accountId);
@@ -42,7 +44,8 @@ Steam2RegistrationResult CompleteSteam2UserLocked(RuntimeState &state, uint32 ac
 void AbortSteam2AuthLocked(RuntimeState &state, uint32 accountId, const Steam2AuthAttempt &attempt,
                            const char *reason);
 const char *Steam2RegistrationResultString(Steam2RegistrationResult result);
-size_t RemoveSteam2UserLocked(RuntimeState &state, uint32 accountId, uint64 *removedGeneration);
+size_t RemoveSteam2UserLocked(RuntimeState &state, uint32 accountId, uint64 *removedGeneration,
+                              const char *reason = "remove_user_connect");
 Steam2DisconnectResult DisconnectSteam2UserLocked(RuntimeState &state, uint32 accountId,
                                                    const CSteamID &steamID, uint64 *expectedSteamID,
                                                    uint64 *removedGeneration);
