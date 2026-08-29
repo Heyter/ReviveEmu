@@ -6,9 +6,15 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <thread>
+#include <string>
+#include <unistd.h>
+
+#include "../LegacySteamAbiReference.h"
 
 namespace
 {
+
+using namespace revive::legacy;
 
 typedef int32_t HSteamPipe;
 typedef int32_t HSteamUser;
@@ -68,7 +74,7 @@ static_assert(sizeof(GSClientSteam2AcceptPayload) == (sizeof(void *) == 4 ? 12u 
 
 void Fail(const char *message)
 {
-    std::fprintf(stderr, "M3.4 ABI/auth/state smoke FAIL: %s\n", message ? message : "unknown error");
+    std::fprintf(stderr, "legacy ABI/auth/state smoke FAIL: %s\n", message ? message : "unknown error");
     std::exit(1);
 }
 
@@ -76,6 +82,34 @@ void Check(bool condition, const char *message)
 {
     if (!condition)
         Fail(message);
+}
+
+std::string ReadTextFile(const char *path)
+{
+    FILE *f = std::fopen(path, "rb");
+    Check(f != NULL, "failed to open ABI trace log");
+    std::string text;
+    char buffer[4096];
+    while (true)
+    {
+        const size_t n = std::fread(buffer, 1, sizeof(buffer), f);
+        if (n) text.append(buffer, n);
+        if (n < sizeof(buffer)) break;
+    }
+    std::fclose(f);
+    return text;
+}
+
+size_t CountSubstring(const std::string &text, const char *needle)
+{
+    size_t count = 0;
+    size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos)
+    {
+        ++count;
+        pos += std::strlen(needle);
+    }
+    return count;
 }
 
 template <typename T>
@@ -86,7 +120,7 @@ T Sym(void *library, const char *name)
     const char *error = dlerror();
     if (error || !symbol)
     {
-        std::fprintf(stderr, "M3.4 ABI/auth/state smoke FAIL: missing symbol %s (%s)\n",
+        std::fprintf(stderr, "legacy ABI/auth/state smoke FAIL: missing symbol %s (%s)\n",
                      name, error ? error : "null");
         std::exit(1);
     }
@@ -153,6 +187,12 @@ int main(int argc, char **argv)
     if (argc != 2)
         Fail("usage: steamclient_abi_smoke <libsteamclient.so>");
 
+    char tracePath[160];
+    std::snprintf(tracePath, sizeof(tracePath), "/tmp/revive_abi_smoke_%ld.log", static_cast<long>(getpid()));
+    std::remove(tracePath);
+    Check(setenv("REVIVE_ABI_TRACE", "1", 1) == 0, "failed to enable ABI tracing for smoke test");
+    Check(setenv("REVIVE_STEAMCLIENT_LOG", tracePath, 1) == 0, "failed to set ABI trace log path");
+
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!library)
         Fail(dlerror());
@@ -202,8 +242,8 @@ int main(int argc, char **argv)
     BuildMarkerFn buildMarker = Sym<BuildMarkerFn>(library, "REVive_LegacySteamClient_BuildMarker");
 
     const char *marker = buildMarker();
-    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.4-dev.1") == 0,
-          "unexpected M3.4 build marker");
+    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.5-dev.1") == 0,
+          "unexpected M3.5 build marker");
 
     int rc = -1;
     void *client = createInterface("SteamClient006", &rc);
@@ -213,26 +253,27 @@ int main(int argc, char **argv)
     typedef HSteamUser (*ClientCreateLocalUserVFn)(void *, HSteamPipe *);
     typedef void *(*ClientGetGameServerVFn)(void *, HSteamUser, HSteamPipe, const char *);
     typedef void *(*ClientGetUtilsVFn)(void *, HSteamPipe, const char *);
-    Check(VSlot<ClientCreateSteamPipeVFn>(client, 0)(client) == 1,
+    Check(VSlot<ClientCreateSteamPipeVFn>(client, kClient006CreateSteamPipe)(client) == 1,
           "SteamClient006 vtable slot 0 failed");
 
     HSteamPipe cppPipe = 0;
-    Check(VSlot<ClientCreateLocalUserVFn>(client, 4)(client, &cppPipe) == 1 && cppPipe == 1,
+    Check(VSlot<ClientCreateLocalUserVFn>(client, kClient006CreateLocalUser)(client, &cppPipe) == 1 && cppPipe == 1,
           "SteamClient006 vtable slot 4 CreateLocalUser failed");
 
-    void *cppGS = VSlot<ClientGetGameServerVFn>(client, 8)(client, 1, 1, "SteamGameServer002");
+    void *cppGS = VSlot<ClientGetGameServerVFn>(client, kClient006GetISteamGameServer)(client, 1, 1, "SteamGameServer002");
     Check(cppGS != NULL, "SteamClient006 vtable slot 8 GetISteamGameServer failed");
 
-    void *utils = VSlot<ClientGetUtilsVFn>(client, 12)(client, 1, "SteamUtils001");
+    void *utils = VSlot<ClientGetUtilsVFn>(client, kClient006GetISteamUtils)(client, 1, "SteamUtils001");
     Check(utils != NULL, "SteamClient006 vtable slot 12 GetISteamUtils failed");
 
     typedef EUniverse (*UtilsGetUniverseVFn)(void *);
     typedef uint32_t (*UtilsGetServerRealTimeVFn)(void *);
-    Check(VSlot<UtilsGetUniverseVFn>(utils, 2)(utils) == k_EUniversePublic,
+    Check(VSlot<UtilsGetUniverseVFn>(utils, kUtils001GetConnectedUniverse)(utils) == k_EUniversePublic,
           "SteamUtils001 vtable slot 2 failed");
-    Check(VSlot<UtilsGetServerRealTimeVFn>(utils, 3)(utils) != 0,
+    Check(VSlot<UtilsGetServerRealTimeVFn>(utils, kUtils001GetServerRealTime)(utils) != 0,
           "SteamUtils001 vtable slot 3 failed");
 
+    runCallbacks(1, true);
     runCallbacks(1, true);
 
     bool apiCallFailed = false;
@@ -279,15 +320,15 @@ int main(int argc, char **argv)
 
     const uint32_t cppIP = 0x01020304u;
     const uint16_t cppPort = 27017;
-    Check(VSlot<GSSetServerType2VFn>(cppGS, 15)(cppGS, 240, 0x5A5A0002u, cppIP,
+    Check(VSlot<GSSetServerType2VFn>(cppGS, kGameServer002SetServerType2)(cppGS, 240, 0x5A5A0002u, cppIP,
                                                  cppPort, 27018, 27019, "cstrike", "1.0.0.34", false),
           "SteamGameServer002 vtable slot 15 SetServerType2 failed");
     Check(static_cast<uint32_t>(gsGetSteamID(flatGS)) == ExpectedServerAccount(cppIP, cppPort),
           "SteamGameServer002 SetServerType2 semantic argument order mismatch");
-    Check(VSlot<GSUpdateStatus2VFn>(cppGS, 16)(cppGS, 3, 32, 1,
+    Check(VSlot<GSUpdateStatus2VFn>(cppGS, kGameServer002UpdateStatus2)(cppGS, 3, 32, 1,
                                                "server-name", "spectator-name", "de_dust2"),
           "SteamGameServer002 vtable slot 16 UpdateStatus2 failed");
-    Check(VSlot<GSObsoleteSetStatusVFn>(cppGS, 10)(cppGS, 240, 0x11u, 3, 32, 1, cppPort,
+    Check(VSlot<GSObsoleteSetStatusVFn>(cppGS, kGameServer002ObsoleteSetStatus)(cppGS, 240, 0x11u, 3, 32, 1, cppPort,
                                                    "server-name", "cstrike", "de_dust2", "1.0.0.34"),
           "SteamGameServer002 vtable slot 10 Obsolete_GSSetStatus failed");
 
@@ -649,7 +690,19 @@ int main(int argc, char **argv)
     gsLogOff(flatGS);
     Check(!gsBLoggedOn(flatGS), "flat Steam_GSLogOff failed");
 
+    const std::string trace = ReadTextFile(tracePath);
+    Check(trace.find("[ReviveEmu][ABI] first_call surface=factory name=CreateInterface support=implemented") != std::string::npos,
+          "ABI trace did not record CreateInterface");
+    Check(trace.find("[ReviveEmu][ABI] interface_query owner=CreateInterface version=SteamClient006 resolved=1") != std::string::npos,
+          "ABI trace did not record SteamClient006 resolution");
+    Check(trace.find("[ReviveEmu][ABI] first_call surface=flat name=Steam_GSSendSteam2UserConnect support=implemented") != std::string::npos,
+          "ABI trace did not record flat Steam2 auth entrypoint");
+    Check(CountSubstring(trace, "first_call surface=flat name=Steam_RunCallbacks ") == 1,
+          "ABI trace must record noisy calls only once");
+    std::remove(tracePath);
+    std::puts("[PASS] M3.5 first-call ABI tracing and interface query capture");
+
     dlclose(library);
-    std::puts("M3.4 ABI/auth/state smoke PASS");
+    std::puts("M3.5 ABI/auth/state smoke PASS");
     return 0;
 }

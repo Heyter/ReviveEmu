@@ -45,6 +45,7 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 		../steamclient_legacy/LegacySteamCallbacks.cpp
 		../steamclient_legacy/LegacySteamAuth.cpp
 		../steamclient_legacy/LegacySteamInterfaces.cpp
+		../steamclient_legacy/LegacySteamTrace.cpp
 	)
 	target_include_directories(steamclient PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	target_compile_definitions(steamclient PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
