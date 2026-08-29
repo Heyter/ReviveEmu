@@ -98,5 +98,21 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 		target_link_libraries(steamclient_lifecycle_smoke PRIVATE pthread)
 		add_test(NAME steamclient_client_lifecycle
 			COMMAND steamclient_lifecycle_smoke)
+
+		add_executable(steamclient_multiclient_stress
+			../steamclient_legacy/tests/LegacyMultiClientStress.cpp
+			../steamclient_legacy/LegacySteamRuntime.cpp
+			../steamclient_legacy/LegacySteamCallbacks.cpp
+			../steamclient_legacy/LegacySteamLifecycle.cpp
+			../steamclient_legacy/LegacySteamAuth.cpp
+			../steamclient_legacy/auth/LegacyAuthTicket.cpp
+			../steamclient_legacy/auth/ClassicRevEmuTicket.cpp
+		)
+		target_include_directories(steamclient_multiclient_stress PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+		target_compile_definitions(steamclient_multiclient_stress PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
+		target_compile_options(steamclient_multiclient_stress PRIVATE -Wall -Wextra -Werror)
+		target_link_libraries(steamclient_multiclient_stress PRIVATE pthread)
+		add_test(NAME steamclient_multiclient_stress
+			COMMAND steamclient_multiclient_stress)
 	endif()
 endif()

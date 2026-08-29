@@ -242,8 +242,8 @@ int main(int argc, char **argv)
     BuildMarkerFn buildMarker = Sym<BuildMarkerFn>(library, "REVive_LegacySteamClient_BuildMarker");
 
     const char *marker = buildMarker();
-    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.7-dev.1") == 0,
-          "unexpected M3.7 build marker");
+    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.8-dev.1") == 0,
+          "unexpected M3.8 build marker");
 
     int rc = -1;
     void *client = createInterface("SteamClient006", &rc);
@@ -777,9 +777,9 @@ int main(int argc, char **argv)
     Check(CountSubstring(trace, "first_call surface=flat name=Steam_RunCallbacks ") == 1,
           "ABI trace must record noisy calls only once");
     std::remove(tracePath);
-    std::puts("[PASS] M3.7 ABI/auth/lifecycle regression with first-call tracing");
+    std::puts("[PASS] M3.8 ABI/auth/lifecycle/multi-client regression with first-call tracing");
 
     dlclose(library);
-    std::puts("M3.7 ABI/auth/lifecycle smoke PASS");
+    std::puts("M3.8 ABI/auth/lifecycle smoke PASS");
     return 0;
 }
