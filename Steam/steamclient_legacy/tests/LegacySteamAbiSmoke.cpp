@@ -68,7 +68,7 @@ static_assert(sizeof(GSClientSteam2AcceptPayload) == (sizeof(void *) == 4 ? 12u 
 
 void Fail(const char *message)
 {
-    std::fprintf(stderr, "M3.2 ABI/auth/state smoke FAIL: %s\n", message ? message : "unknown error");
+    std::fprintf(stderr, "M3.4 ABI/auth/state smoke FAIL: %s\n", message ? message : "unknown error");
     std::exit(1);
 }
 
@@ -86,7 +86,7 @@ T Sym(void *library, const char *name)
     const char *error = dlerror();
     if (error || !symbol)
     {
-        std::fprintf(stderr, "M3.2 ABI/auth/state smoke FAIL: missing symbol %s (%s)\n",
+        std::fprintf(stderr, "M3.4 ABI/auth/state smoke FAIL: missing symbol %s (%s)\n",
                      name, error ? error : "null");
         std::exit(1);
     }
@@ -202,8 +202,8 @@ int main(int argc, char **argv)
     BuildMarkerFn buildMarker = Sym<BuildMarkerFn>(library, "REVive_LegacySteamClient_BuildMarker");
 
     const char *marker = buildMarker();
-    Check(marker && std::strstr(marker, "REVive legacy SteamClient006 backend") == marker,
-          "unexpected build marker");
+    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.4-dev.1") == 0,
+          "unexpected M3.4 build marker");
 
     int rc = -1;
     void *client = createInterface("SteamClient006", &rc);
@@ -650,6 +650,6 @@ int main(int argc, char **argv)
     Check(!gsBLoggedOn(flatGS), "flat Steam_GSLogOff failed");
 
     dlclose(library);
-    std::puts("M3.2 ABI/auth/state smoke PASS");
+    std::puts("M3.4 ABI/auth/state smoke PASS");
     return 0;
 }

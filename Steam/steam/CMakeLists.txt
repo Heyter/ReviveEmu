@@ -39,11 +39,22 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 	# This is deliberately a small standalone target: it implements the exact
 	# SteamClient006 / SteamGameServer002 era ABI instead of pulling in modern
 	# Steamworks interfaces.
-	add_library(steamclient SHARED ../steamclient_legacy/LegacySteamClient.cpp)
+	add_library(steamclient SHARED
+		../steamclient_legacy/LegacySteamClient.cpp
+		../steamclient_legacy/LegacySteamRuntime.cpp
+		../steamclient_legacy/LegacySteamCallbacks.cpp
+		../steamclient_legacy/LegacySteamAuth.cpp
+		../steamclient_legacy/LegacySteamInterfaces.cpp
+	)
 	target_include_directories(steamclient PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	target_compile_definitions(steamclient PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
+	target_compile_options(steamclient PRIVATE -Wall -Wextra -Werror)
 	target_link_libraries(steamclient PRIVATE dl pthread)
-	set_target_properties(steamclient PROPERTIES OUTPUT_NAME steamclient)
+	set_target_properties(steamclient PROPERTIES
+		OUTPUT_NAME steamclient
+		CXX_VISIBILITY_PRESET hidden
+		VISIBILITY_INLINES_HIDDEN YES
+	)
 
 	if(BUILD_TESTING)
 		add_executable(steamclient_abi_smoke ../steamclient_legacy/tests/LegacySteamAbiSmoke.cpp)

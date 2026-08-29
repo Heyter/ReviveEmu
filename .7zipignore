@@ -8,3 +8,12 @@ core
 core.*
 debug.log
 LICENSE
+build/
+build-*/
+CMakeFiles/
+Testing/
+CMakeCache.txt
+cmake_install.cmake
+build.ninja
+.ninja_deps
+.ninja_log
