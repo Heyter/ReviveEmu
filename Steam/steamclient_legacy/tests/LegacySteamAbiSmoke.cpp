@@ -242,7 +242,7 @@ int main(int argc, char **argv)
     BuildMarkerFn buildMarker = Sym<BuildMarkerFn>(library, "REVive_LegacySteamClient_BuildMarker");
 
     const char *marker = buildMarker();
-    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.5-dev.1") == 0,
+    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.5-dev.2") == 0,
           "unexpected M3.5 build marker");
 
     int rc = -1;
@@ -265,6 +265,44 @@ int main(int argc, char **argv)
 
     void *utils = VSlot<ClientGetUtilsVFn>(client, kClient006GetISteamUtils)(client, 1, "SteamUtils001");
     Check(utils != NULL, "SteamClient006 vtable slot 12 GetISteamUtils failed");
+
+    typedef void *(*ClientGetMasterUpdaterVFn)(void *, HSteamUser, HSteamPipe, const char *);
+    void *masterUpdater = VSlot<ClientGetMasterUpdaterVFn>(client, kClient006GetISteamMasterServerUpdater)(
+        client, 1, 1, "SteamMasterServerUpdater001");
+    Check(masterUpdater != NULL, "SteamClient006 vtable slot 17 GetISteamMasterServerUpdater failed");
+
+    typedef void (*MasterSetActiveVFn)(void *, bool);
+    typedef void (*MasterSetHeartbeatIntervalVFn)(void *, int);
+    typedef void (*MasterSetBasicServerDataVFn)(void *, uint16_t, bool, const char *, const char *, uint16_t, bool, const char *);
+    typedef void (*MasterClearAllKeyValuesVFn)(void *);
+    typedef void (*MasterSetKeyValueVFn)(void *, const char *, const char *);
+    typedef bool (*MasterAddMasterServerVFn)(void *, const char *);
+    typedef bool (*MasterRemoveMasterServerVFn)(void *, const char *);
+    typedef int (*MasterGetNumMasterServersVFn)(void *);
+    typedef int (*MasterGetMasterServerAddressVFn)(void *, int, char *, int);
+
+    VSlot<MasterSetActiveVFn>(masterUpdater, kMaster001SetActive)(masterUpdater, true);
+    VSlot<MasterSetHeartbeatIntervalVFn>(masterUpdater, kMaster001SetHeartbeatInterval)(masterUpdater, 30);
+    VSlot<MasterSetBasicServerDataVFn>(masterUpdater, kMaster001SetBasicServerData)(
+        masterUpdater, 7, true, "255", "cstrike", 32, false, "Counter-Strike: Source");
+    VSlot<MasterClearAllKeyValuesVFn>(masterUpdater, kMaster001ClearAllKeyValues)(masterUpdater);
+    VSlot<MasterSetKeyValueVFn>(masterUpdater, kMaster001SetKeyValue)(masterUpdater, "map", "de_dust2");
+    Check(VSlot<MasterAddMasterServerVFn>(masterUpdater, kMaster001AddMasterServer)(masterUpdater, "master.example:27011"),
+          "SteamMasterServerUpdater001 AddMasterServer failed");
+    Check(VSlot<MasterAddMasterServerVFn>(masterUpdater, kMaster001AddMasterServer)(masterUpdater, "master.example:27011"),
+          "SteamMasterServerUpdater001 duplicate AddMasterServer failed");
+    Check(VSlot<MasterGetNumMasterServersVFn>(masterUpdater, kMaster001GetNumMasterServers)(masterUpdater) == 1,
+          "SteamMasterServerUpdater001 master-server dedup failed");
+    char masterAddress[64] = {};
+    const int masterAddressLength = VSlot<MasterGetMasterServerAddressVFn>(masterUpdater, kMaster001GetMasterServerAddress)(
+        masterUpdater, 0, masterAddress, sizeof(masterAddress));
+    Check(masterAddressLength == static_cast<int>(std::strlen("master.example:27011")) &&
+              std::strcmp(masterAddress, "master.example:27011") == 0,
+          "SteamMasterServerUpdater001 GetMasterServerAddress failed");
+    Check(VSlot<MasterRemoveMasterServerVFn>(masterUpdater, kMaster001RemoveMasterServer)(masterUpdater, "master.example:27011"),
+          "SteamMasterServerUpdater001 RemoveMasterServer failed");
+    Check(VSlot<MasterGetNumMasterServersVFn>(masterUpdater, kMaster001GetNumMasterServers)(masterUpdater) == 0,
+          "SteamMasterServerUpdater001 master-server remove failed");
 
     typedef EUniverse (*UtilsGetUniverseVFn)(void *);
     typedef uint32_t (*UtilsGetServerRealTimeVFn)(void *);
@@ -691,6 +729,10 @@ int main(int argc, char **argv)
     Check(!gsBLoggedOn(flatGS), "flat Steam_GSLogOff failed");
 
     const std::string trace = ReadTextFile(tracePath);
+    Check(trace.find("surface=SteamClient006 name=GetISteamMasterServerUpdater support=implemented") != std::string::npos,
+          "master updater accessor must be classified implemented");
+    Check(trace.find("surface=SteamMasterServerUpdater001 name=SetKeyValue support=implemented") != std::string::npos,
+          "master updater SetKeyValue must be classified implemented");
     Check(trace.find("[ReviveEmu][ABI] first_call surface=factory name=CreateInterface support=implemented") != std::string::npos,
           "ABI trace did not record CreateInterface");
     Check(trace.find("[ReviveEmu][ABI] interface_query owner=CreateInterface version=SteamClient006 resolved=1") != std::string::npos,

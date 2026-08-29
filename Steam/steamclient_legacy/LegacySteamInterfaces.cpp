@@ -19,6 +19,27 @@ CSteamGameServer002 g_gameServer;
 CSteamUtils001 g_utils;
 CSteamMasterServerUpdater001 g_masterUpdater;
 CSteamClient006 g_client;
+
+void CopyText(char *dst, size_t dstSize, const char *src)
+{
+    if (!dst || dstSize == 0)
+        return;
+    const char *safe = src ? src : "";
+    std::strncpy(dst, safe, dstSize - 1);
+    dst[dstSize - 1] = '\0';
+}
+
+int FindMasterServer(const MasterServerState &master, const char *serverAddress)
+{
+    if (!serverAddress)
+        return -1;
+    for (size_t i = 0; i < master.masterServerCount; ++i)
+    {
+        if (std::strcmp(master.masterServers[i], serverAddress) == 0)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
 } // namespace
 
 CSteamClient006 &SteamClient() { return g_client; }
@@ -98,7 +119,7 @@ void *CSteamClient006::GetISteamApps(HSteamUser, HSteamPipe, const char *version
 
 void *CSteamClient006::GetISteamMasterServerUpdater(HSteamUser, HSteamPipe, const char *version)
 {
-    TraceAbiCall("SteamClient006", "GetISteamMasterServerUpdater", kAbiPartial);
+    TraceAbiCall("SteamClient006", "GetISteamMasterServerUpdater", kAbiImplemented);
     Log("Client", "GetISteamMasterServerUpdater version=%s", version ? version : "(null)");
     void *result = version && std::strcmp(version, "SteamMasterServerUpdater001") == 0 ? &g_masterUpdater : NULL;
     TraceAbiInterfaceQuery("SteamClient006.GetISteamMasterServerUpdater", version, result != NULL);
@@ -384,26 +405,188 @@ uint32 CSteamUtils001::GetServerRealTime() { TraceAbiCall("SteamUtils001", "GetS
 
 void CSteamMasterServerUpdater001::SetActive(bool active)
 {
-    TraceAbiCall("SteamMasterServerUpdater001", "SetActive", kAbiPartial);
+    TraceAbiCall("SteamMasterServerUpdater001", "SetActive", kAbiImplemented);
+    RuntimeState &state = Runtime();
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.masterServer.active = active;
+        if (active)
+            state.masterServer.shutdownNotified = false;
+    }
     Log("MasterServer", "SetActive=%d", active ? 1 : 0);
 }
-void CSteamMasterServerUpdater001::SetHeartbeatInterval(int) { TraceAbiCall("SteamMasterServerUpdater001", "SetHeartbeatInterval", kAbiCompatibleNoop); }
-bool CSteamMasterServerUpdater001::HandleIncomingPacket(const void *, int, uint32, uint16) { TraceAbiCall("SteamMasterServerUpdater001", "HandleIncomingPacket", kAbiUnsupported); return false; }
-int CSteamMasterServerUpdater001::GetNextOutgoingPacket(void *, int, uint32 *, uint16 *) { TraceAbiCall("SteamMasterServerUpdater001", "GetNextOutgoingPacket", kAbiUnsupported); return 0; }
-void CSteamMasterServerUpdater001::SetBasicServerData(uint16, bool, const char *, const char *, uint16, bool, const char *) { TraceAbiCall("SteamMasterServerUpdater001", "SetBasicServerData", kAbiCompatibleNoop); }
-void CSteamMasterServerUpdater001::ClearAllKeyValues() { TraceAbiCall("SteamMasterServerUpdater001", "ClearAllKeyValues", kAbiCompatibleNoop); }
-void CSteamMasterServerUpdater001::SetKeyValue(const char *, const char *) { TraceAbiCall("SteamMasterServerUpdater001", "SetKeyValue", kAbiCompatibleNoop); }
-void CSteamMasterServerUpdater001::NotifyShutdown() { TraceAbiCall("SteamMasterServerUpdater001", "NotifyShutdown", kAbiCompatibleNoop); }
-bool CSteamMasterServerUpdater001::WasRestartRequested() { TraceAbiCall("SteamMasterServerUpdater001", "WasRestartRequested", kAbiCompatibleNoop); return false; }
-void CSteamMasterServerUpdater001::ForceHeartbeat() { TraceAbiCall("SteamMasterServerUpdater001", "ForceHeartbeat", kAbiCompatibleNoop); }
-bool CSteamMasterServerUpdater001::AddMasterServer(const char *) { TraceAbiCall("SteamMasterServerUpdater001", "AddMasterServer", kAbiUnsupported); return false; }
-bool CSteamMasterServerUpdater001::RemoveMasterServer(const char *) { TraceAbiCall("SteamMasterServerUpdater001", "RemoveMasterServer", kAbiUnsupported); return false; }
-int CSteamMasterServerUpdater001::GetNumMasterServers() { TraceAbiCall("SteamMasterServerUpdater001", "GetNumMasterServers", kAbiUnsupported); return 0; }
-int CSteamMasterServerUpdater001::GetMasterServerAddress(int, char *address, int addressSize)
+
+void CSteamMasterServerUpdater001::SetHeartbeatInterval(int interval)
 {
-    TraceAbiCall("SteamMasterServerUpdater001", "GetMasterServerAddress", kAbiUnsupported);
-    if (address && addressSize > 0) address[0] = '\0';
+    TraceAbiCall("SteamMasterServerUpdater001", "SetHeartbeatInterval", kAbiImplemented);
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.masterServer.heartbeatInterval = interval;
+}
+
+bool CSteamMasterServerUpdater001::HandleIncomingPacket(const void *, int, uint32, uint16)
+{
+    // Packet-level master-server protocol is intentionally out of scope while
+    // MASTER_SERVER=0. Keep this explicit so a future runtime call is visible.
+    TraceAbiCall("SteamMasterServerUpdater001", "HandleIncomingPacket", kAbiUnsupported);
+    return false;
+}
+
+int CSteamMasterServerUpdater001::GetNextOutgoingPacket(void *, int, uint32 *ip, uint16 *port)
+{
+    TraceAbiCall("SteamMasterServerUpdater001", "GetNextOutgoingPacket", kAbiUnsupported);
+    if (ip) *ip = 0;
+    if (port) *port = 0;
     return 0;
+}
+
+void CSteamMasterServerUpdater001::SetBasicServerData(uint16 protocolVersion, bool dedicated,
+                                                       const char *region, const char *productName,
+                                                       uint16 maxClients, bool passwordProtected,
+                                                       const char *gameDescription)
+{
+    TraceAbiCall("SteamMasterServerUpdater001", "SetBasicServerData", kAbiImplemented);
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.masterServer.protocolVersion = protocolVersion;
+    state.masterServer.dedicated = dedicated;
+    CopyText(state.masterServer.regionName, sizeof(state.masterServer.regionName), region);
+    CopyText(state.masterServer.productName, sizeof(state.masterServer.productName), productName);
+    state.masterServer.maxClients = maxClients;
+    state.masterServer.passwordProtected = passwordProtected;
+    CopyText(state.masterServer.gameDescription, sizeof(state.masterServer.gameDescription), gameDescription);
+}
+
+void CSteamMasterServerUpdater001::ClearAllKeyValues()
+{
+    TraceAbiCall("SteamMasterServerUpdater001", "ClearAllKeyValues", kAbiImplemented);
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    std::memset(state.masterServer.keyValues, 0, sizeof(state.masterServer.keyValues));
+}
+
+void CSteamMasterServerUpdater001::SetKeyValue(const char *key, const char *value)
+{
+    TraceAbiCall("SteamMasterServerUpdater001", "SetKeyValue", kAbiImplemented);
+    if (!key || !*key)
+        return;
+
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    MasterServerState &master = state.masterServer;
+    MasterKeyValue *freeSlot = NULL;
+    for (size_t i = 0; i < sizeof(master.keyValues) / sizeof(master.keyValues[0]); ++i)
+    {
+        MasterKeyValue &entry = master.keyValues[i];
+        if (entry.used && std::strcmp(entry.key, key) == 0)
+        {
+            CopyText(entry.value, sizeof(entry.value), value);
+            return;
+        }
+        if (!entry.used && !freeSlot)
+            freeSlot = &entry;
+    }
+    if (!freeSlot)
+        return;
+    freeSlot->used = true;
+    CopyText(freeSlot->key, sizeof(freeSlot->key), key);
+    CopyText(freeSlot->value, sizeof(freeSlot->value), value);
+}
+
+void CSteamMasterServerUpdater001::NotifyShutdown()
+{
+    TraceAbiCall("SteamMasterServerUpdater001", "NotifyShutdown", kAbiImplemented);
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.masterServer.active = false;
+    state.masterServer.shutdownNotified = true;
+}
+
+bool CSteamMasterServerUpdater001::WasRestartRequested()
+{
+    // A restart request can only arrive through the currently unsupported
+    // master-server packet protocol. Returning false is the safe compatibility
+    // behavior when master communication is disabled.
+    TraceAbiCall("SteamMasterServerUpdater001", "WasRestartRequested", kAbiCompatibleNoop);
+    return false;
+}
+
+void CSteamMasterServerUpdater001::ForceHeartbeat()
+{
+    // Preserve the request in local state. Actual UDP emission remains outside
+    // this compatibility layer until master-server networking becomes scope.
+    TraceAbiCall("SteamMasterServerUpdater001", "ForceHeartbeat", kAbiPartial);
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.masterServer.heartbeatForced = true;
+}
+
+bool CSteamMasterServerUpdater001::AddMasterServer(const char *serverAddress)
+{
+    TraceAbiCall("SteamMasterServerUpdater001", "AddMasterServer", kAbiImplemented);
+    if (!serverAddress || !*serverAddress)
+        return false;
+
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    MasterServerState &master = state.masterServer;
+    if (FindMasterServer(master, serverAddress) >= 0)
+        return true;
+    if (master.masterServerCount >= sizeof(master.masterServers) / sizeof(master.masterServers[0]))
+        return false;
+    CopyText(master.masterServers[master.masterServerCount], sizeof(master.masterServers[0]), serverAddress);
+    ++master.masterServerCount;
+    return true;
+}
+
+bool CSteamMasterServerUpdater001::RemoveMasterServer(const char *serverAddress)
+{
+    TraceAbiCall("SteamMasterServerUpdater001", "RemoveMasterServer", kAbiImplemented);
+    if (!serverAddress || !*serverAddress)
+        return false;
+
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    MasterServerState &master = state.masterServer;
+    const int index = FindMasterServer(master, serverAddress);
+    if (index < 0)
+        return false;
+    const size_t pos = static_cast<size_t>(index);
+    for (size_t i = pos + 1; i < master.masterServerCount; ++i)
+        std::memcpy(master.masterServers[i - 1], master.masterServers[i], sizeof(master.masterServers[i]));
+    --master.masterServerCount;
+    master.masterServers[master.masterServerCount][0] = '\0';
+    return true;
+}
+
+int CSteamMasterServerUpdater001::GetNumMasterServers()
+{
+    TraceAbiCall("SteamMasterServerUpdater001", "GetNumMasterServers", kAbiImplemented);
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    return static_cast<int>(state.masterServer.masterServerCount);
+}
+
+int CSteamMasterServerUpdater001::GetMasterServerAddress(int serverIndex, char *address, int addressSize)
+{
+    TraceAbiCall("SteamMasterServerUpdater001", "GetMasterServerAddress", kAbiImplemented);
+    if (!address || addressSize <= 0)
+        return 0;
+    address[0] = '\0';
+
+    RuntimeState &state = Runtime();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    MasterServerState &master = state.masterServer;
+    if (serverIndex < 0 || static_cast<size_t>(serverIndex) >= master.masterServerCount)
+        return 0;
+
+    const char *server = master.masterServers[static_cast<size_t>(serverIndex)];
+    const size_t sourceLength = std::strlen(server);
+    const size_t maxCopy = static_cast<size_t>(addressSize - 1);
+    const size_t bytes = sourceLength < maxCopy ? sourceLength : maxCopy;
+    std::memcpy(address, server, bytes);
+    address[bytes] = '\0';
+    return static_cast<int>(bytes);
 }
 
 } // namespace legacy

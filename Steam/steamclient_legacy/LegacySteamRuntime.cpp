@@ -3,12 +3,31 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 
 namespace revive
 {
 namespace legacy
 {
+
+MasterServerState::MasterServerState()
+    : active(false),
+      heartbeatInterval(-1),
+      protocolVersion(0),
+      dedicated(false),
+      maxClients(0),
+      passwordProtected(false),
+      masterServerCount(0),
+      shutdownNotified(false),
+      heartbeatForced(false)
+{
+    regionName[0] = '\0';
+    productName[0] = '\0';
+    gameDescription[0] = '\0';
+    std::memset(keyValues, 0, sizeof(keyValues));
+    std::memset(masterServers, 0, sizeof(masterServers));
+}
 
 RuntimeState::RuntimeState()
     : callbackInFlight(false),

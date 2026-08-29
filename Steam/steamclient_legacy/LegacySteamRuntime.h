@@ -43,6 +43,33 @@ struct QueuedCallback
     bool authCallback;
 };
 
+struct MasterKeyValue
+{
+    bool used;
+    char key[64];
+    char value[128];
+};
+
+struct MasterServerState
+{
+    MasterServerState();
+
+    bool active;
+    int heartbeatInterval;
+    uint16 protocolVersion;
+    bool dedicated;
+    char regionName[64];
+    char productName[64];
+    uint16 maxClients;
+    bool passwordProtected;
+    char gameDescription[128];
+    MasterKeyValue keyValues[64];
+    char masterServers[16][128];
+    size_t masterServerCount;
+    bool shutdownNotified;
+    bool heartbeatForced;
+};
+
 struct RuntimeState
 {
     RuntimeState();
@@ -55,6 +82,7 @@ struct RuntimeState
     uint32 localIP;
     uint16 localPort;
     std::map<uint32, CSteamID> steam2Users;
+    MasterServerState masterServer;
     uint32 botCounter;
 };
 
