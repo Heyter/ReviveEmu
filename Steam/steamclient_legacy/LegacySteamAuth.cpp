@@ -1,20 +1,59 @@
 #include "LegacySteamAuth.h"
 
+#include "LegacySteamLifecycle.h"
+
 namespace revive
 {
 namespace legacy
 {
 
-Steam2RegistrationResult RegisterSteam2UserLocked(RuntimeState &state, uint32 accountId,
-                                                   const auth::AuthTicketIdentity &identity)
+Steam2AuthAttempt::Steam2AuthAttempt()
+    : generation(0), createdReservation(false)
 {
-    const uint64 steamID64 = identity.steamID.ConvertToUint64();
-    std::map<uint32, Steam2AuthSession>::const_iterator accountIt = state.steam2Users.find(accountId);
-    if (accountIt != state.steam2Users.end())
+}
+
+Steam2AuthAttempt BeginSteam2AuthLocked(RuntimeState &state, uint32 accountId)
+{
+    Steam2AuthAttempt attempt;
+    std::map<uint32, Steam2AuthSession>::const_iterator existing = state.steam2Users.find(accountId);
+    if (existing != state.steam2Users.end())
     {
-        // Preserve the accepted M3.2 idempotency contract: the engine may submit
-        // the same logical identity again for the same account while it is active.
-        return accountIt->second.steamID.ConvertToUint64() == steamID64
+        attempt.generation = existing->second.generation;
+        return attempt;
+    }
+
+    ++state.nextClientGeneration;
+    if (state.nextClientGeneration == 0)
+        ++state.nextClientGeneration;
+
+    Steam2AuthSession session;
+    session.generation = state.nextClientGeneration;
+    session.lifecycle = kClientLifecycleNew;
+    state.steam2Users[accountId] = session;
+
+    attempt.generation = session.generation;
+    attempt.createdReservation = true;
+    Log("Lifecycle", "created account=%u generation=%llu state=NEW reason=auth_begin",
+        accountId, static_cast<unsigned long long>(attempt.generation));
+    return attempt;
+}
+
+Steam2RegistrationResult CompleteSteam2UserLocked(RuntimeState &state, uint32 accountId,
+                                                   const Steam2AuthAttempt &attempt,
+                                                   const auth::AuthTicketIdentity &identity,
+                                                   uint64 *sessionGeneration)
+{
+    std::map<uint32, Steam2AuthSession>::iterator accountIt = state.steam2Users.find(accountId);
+    if (accountIt == state.steam2Users.end() || accountIt->second.generation != attempt.generation)
+        return kSteam2RegistrationAuthCanceled;
+
+    Steam2AuthSession &accountSession = accountIt->second;
+    const uint64 steamID64 = identity.steamID.ConvertToUint64();
+    if (accountSession.identityBound)
+    {
+        if (sessionGeneration)
+            *sessionGeneration = accountSession.generation;
+        return accountSession.steamID.ConvertToUint64() == steamID64
             ? kSteam2RegistrationIdempotent
             : kSteam2RegistrationAccountConflict;
     }
@@ -22,20 +61,47 @@ Steam2RegistrationResult RegisterSteam2UserLocked(RuntimeState &state, uint32 ac
     for (std::map<uint32, Steam2AuthSession>::const_iterator it = state.steam2Users.begin();
          it != state.steam2Users.end(); ++it)
     {
+        if (it->first == accountId || !it->second.identityBound)
+            continue;
         if (it->second.steamID.ConvertToUint64() != steamID64)
             continue;
 
-        if (identity.fingerprint != 0 && it->second.ticketFingerprint == identity.fingerprint)
-            return kSteam2RegistrationActiveReplay;
-        return kSteam2RegistrationDuplicateSteamID;
+        const Steam2RegistrationResult result =
+            identity.fingerprint != 0 && it->second.ticketFingerprint == identity.fingerprint
+                ? kSteam2RegistrationActiveReplay
+                : kSteam2RegistrationDuplicateSteamID;
+        RemoveClientLifecycleLocked(state, accountId, attempt.generation,
+                                    Steam2RegistrationResultString(result));
+        return result;
     }
 
-    Steam2AuthSession session;
-    session.steamID = identity.steamID;
-    session.ticketFingerprint = identity.fingerprint;
-    session.ticketType = static_cast<uint32>(identity.type);
-    state.steam2Users[accountId] = session;
+    accountSession.steamID = identity.steamID;
+    accountSession.ticketFingerprint = identity.fingerprint;
+    accountSession.ticketType = static_cast<uint32>(identity.type);
+    accountSession.identityBound = true;
+    if (!TransitionClientLifecycleLocked(state, accountId, attempt.generation,
+                                         kClientLifecycleAuthPending, "ticket_validated"))
+    {
+        RemoveClientLifecycleLocked(state, accountId, attempt.generation, "auth_transition_failed");
+        return kSteam2RegistrationAuthCanceled;
+    }
+
+    if (sessionGeneration)
+        *sessionGeneration = attempt.generation;
     return kSteam2RegistrationAccepted;
+}
+
+void AbortSteam2AuthLocked(RuntimeState &state, uint32 accountId, const Steam2AuthAttempt &attempt,
+                           const char *reason)
+{
+    if (!attempt.createdReservation)
+        return;
+
+    std::map<uint32, Steam2AuthSession>::iterator it = state.steam2Users.find(accountId);
+    if (it == state.steam2Users.end() || it->second.generation != attempt.generation || it->second.identityBound)
+        return;
+
+    RemoveClientLifecycleLocked(state, accountId, attempt.generation, reason ? reason : "auth_abort");
 }
 
 const char *Steam2RegistrationResultString(Steam2RegistrationResult result)
@@ -47,21 +113,41 @@ const char *Steam2RegistrationResultString(Steam2RegistrationResult result)
         case kSteam2RegistrationAccountConflict: return "account_conflict";
         case kSteam2RegistrationActiveReplay: return "active_ticket_replay";
         case kSteam2RegistrationDuplicateSteamID: return "duplicate_steamid";
+        case kSteam2RegistrationAuthCanceled: return "auth_canceled";
         default: return "unknown";
     }
 }
 
-size_t RemoveSteam2UserLocked(RuntimeState &state, uint32 accountId)
+size_t RemoveSteam2UserLocked(RuntimeState &state, uint32 accountId, uint64 *removedGeneration)
 {
-    return state.steam2Users.erase(accountId);
+    std::map<uint32, Steam2AuthSession>::const_iterator it = state.steam2Users.find(accountId);
+    if (it == state.steam2Users.end())
+        return 0;
+    const uint64 generation = it->second.generation;
+    if (removedGeneration)
+        *removedGeneration = generation;
+    return RemoveClientLifecycleLocked(state, accountId, generation, "remove_user_connect");
 }
 
 Steam2DisconnectResult DisconnectSteam2UserLocked(RuntimeState &state, uint32 accountId,
-                                                   const CSteamID &steamID, uint64 *expectedSteamID)
+                                                   const CSteamID &steamID, uint64 *expectedSteamID,
+                                                   uint64 *removedGeneration)
 {
     std::map<uint32, Steam2AuthSession>::iterator it = state.steam2Users.find(accountId);
     if (it == state.steam2Users.end())
         return kSteam2DisconnectAlreadyAbsent;
+
+    const uint64 generation = it->second.generation;
+    if (removedGeneration)
+        *removedGeneration = generation;
+
+    if (!it->second.identityBound)
+    {
+        if (expectedSteamID)
+            *expectedSteamID = 0;
+        RemoveClientLifecycleLocked(state, accountId, generation, "disconnect_during_auth");
+        return kSteam2DisconnectCanceledPendingAuth;
+    }
 
     const uint64 expected = it->second.steamID.ConvertToUint64();
     if (expectedSteamID)
@@ -70,7 +156,7 @@ Steam2DisconnectResult DisconnectSteam2UserLocked(RuntimeState &state, uint32 ac
     if (expected != steamID.ConvertToUint64())
         return kSteam2DisconnectIdentityMismatch;
 
-    state.steam2Users.erase(it);
+    RemoveClientLifecycleLocked(state, accountId, generation, "user_disconnect");
     return kSteam2DisconnectRemoved;
 }
 

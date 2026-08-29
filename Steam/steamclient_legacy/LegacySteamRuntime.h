@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 
+#include "LegacySteamLifecycle.h"
 #include "../steam/SteamCommon.h"
 #include "../steam/RevCommon.h"
 #define INCLUDED_STEAM2_USERID_STRUCTS
@@ -41,6 +42,7 @@ struct QueuedCallback
     uint32 accountId;
     uint64 steamID;
     bool authCallback;
+    uint64 generation;
 };
 
 struct MasterKeyValue
@@ -77,6 +79,9 @@ struct Steam2AuthSession
     CSteamID steamID;
     uint64 ticketFingerprint;
     uint32 ticketType;
+    uint64 generation;
+    ClientLifecycleState lifecycle;
+    bool identityBound;
 };
 
 struct RuntimeState
@@ -93,6 +98,7 @@ struct RuntimeState
     std::map<uint32, Steam2AuthSession> steam2Users;
     MasterServerState masterServer;
     uint32 botCounter;
+    uint64 nextClientGeneration;
 };
 
 RuntimeState &Runtime();

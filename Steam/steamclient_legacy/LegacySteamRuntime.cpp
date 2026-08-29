@@ -12,7 +12,8 @@ namespace legacy
 {
 
 Steam2AuthSession::Steam2AuthSession()
-    : steamID(), ticketFingerprint(0), ticketType(0)
+    : steamID(), ticketFingerprint(0), ticketType(0), generation(0),
+      lifecycle(kClientLifecycleNew), identityBound(false)
 {
 }
 
@@ -40,7 +41,8 @@ RuntimeState::RuntimeState()
       loggedOn(false),
       localIP(0),
       localPort(0),
-      botCounter(1)
+      botCounter(1),
+      nextClientGeneration(0)
 {
 }
 

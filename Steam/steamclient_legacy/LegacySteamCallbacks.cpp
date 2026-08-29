@@ -1,5 +1,7 @@
 #include "LegacySteamCallbacks.h"
 
+#include "LegacySteamLifecycle.h"
+
 namespace revive
 {
 namespace legacy
@@ -32,7 +34,7 @@ static_assert(sizeof(GSClientSteam2AcceptPayload) == (sizeof(void *) == 4 ? 12u 
               "GSClientSteam2Accept callback payload ABI mismatch");
 
 void QueueCallbackLocked(RuntimeState &state, int callback, const void *payload, size_t payloadSize,
-                         uint32 accountId, uint64 steamID, bool authCallback)
+                         uint32 accountId, uint64 steamID, bool authCallback, uint64 generation)
 {
     QueuedCallback item;
     item.user = kUser;
@@ -40,6 +42,7 @@ void QueueCallbackLocked(RuntimeState &state, int callback, const void *payload,
     item.accountId = accountId;
     item.steamID = steamID;
     item.authCallback = authCallback;
+    item.generation = generation;
     if (payload && payloadSize)
     {
         const uint8 *p = static_cast<const uint8 *>(payload);
@@ -54,7 +57,7 @@ void QueueCallback(int callback, const void *payload, size_t payloadSize)
 {
     RuntimeState &state = Runtime();
     std::lock_guard<std::mutex> lock(state.mutex);
-    QueueCallbackLocked(state, callback, payload, payloadSize, 0, 0, false);
+    QueueCallbackLocked(state, callback, payload, payloadSize, 0, 0, false, 0);
 }
 
 void QueueClientApprove(const CSteamID &steamID)
@@ -65,7 +68,7 @@ void QueueClientApprove(const CSteamID &steamID)
     QueueCallback(kCallbackGSClientApprove, &payload, sizeof(payload));
 }
 
-void QueueSteam2AuthCallbacksLocked(RuntimeState &state, uint32 accountId, const CSteamID &steamID)
+void QueueSteam2AuthCallbacksLocked(RuntimeState &state, uint32 accountId, const CSteamID &steamID, uint64 generation)
 {
     const uint64 steamID64 = steamID.ConvertToUint64();
 
@@ -73,16 +76,16 @@ void QueueSteam2AuthCallbacksLocked(RuntimeState &state, uint32 accountId, const
     acceptPayload.userID = accountId;
     acceptPayload.steamID = steamID64;
     QueueCallbackLocked(state, kCallbackGSClientSteam2Accept, &acceptPayload, sizeof(acceptPayload),
-                        accountId, steamID64, true);
+                        accountId, steamID64, true, generation);
 
     GSClientApprovePayload approvePayload;
     approvePayload.steamID = steamID;
     approvePayload.ownerSteamID = steamID;
     QueueCallbackLocked(state, kCallbackGSClientApprove, &approvePayload, sizeof(approvePayload),
-                        accountId, steamID64, true);
+                        accountId, steamID64, true, generation);
 }
 
-size_t RemovePendingAuthCallbacksLocked(RuntimeState &state, uint32 accountId)
+size_t RemovePendingAuthCallbacksLocked(RuntimeState &state, uint32 accountId, uint64 generation)
 {
     size_t removed = 0;
     std::deque<QueuedCallback>::iterator it = state.callbacks.begin();
@@ -91,7 +94,7 @@ size_t RemovePendingAuthCallbacksLocked(RuntimeState &state, uint32 accountId)
 
     while (it != state.callbacks.end())
     {
-        if (it->authCallback && it->accountId == accountId)
+        if (it->authCallback && it->accountId == accountId && (generation == 0 || it->generation == generation))
         {
             it = state.callbacks.erase(it);
             ++removed;
@@ -127,7 +130,11 @@ void FreeLastCallback(HSteamPipe pipe)
     RuntimeState &state = Runtime();
     std::lock_guard<std::mutex> lock(state.mutex);
     if (pipe == kPipe && state.callbackInFlight && !state.callbacks.empty())
+    {
+        const QueuedCallback &item = state.callbacks.front();
+        ApplyAuthCallbackLifecycleLocked(state, item);
         state.callbacks.pop_front();
+    }
     state.callbackInFlight = false;
 }
 

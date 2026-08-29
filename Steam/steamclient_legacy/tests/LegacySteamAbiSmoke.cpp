@@ -242,8 +242,8 @@ int main(int argc, char **argv)
     BuildMarkerFn buildMarker = Sym<BuildMarkerFn>(library, "REVive_LegacySteamClient_BuildMarker");
 
     const char *marker = buildMarker();
-    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.6-dev.1") == 0,
-          "unexpected M3.6 build marker");
+    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.7-dev.1") == 0,
+          "unexpected M3.7 build marker");
 
     int rc = -1;
     void *client = createInterface("SteamClient006", &rc);
@@ -681,22 +681,30 @@ int main(int argc, char **argv)
     Check(inFlightAccept.userID == 112 && inFlightAccept.steamID == steamG,
           "in-flight callback payload mismatch before disconnect");
     Check(gsSendUserDisconnect(flatGS, steamG, 112), "in-flight disconnect failed");
-    // The payload must remain valid until the required FreeLastCallback call.
+    // Reuse the exact same accountId before the old in-flight callback is freed.
+    // M3.7 generation tokens must keep that stale 205 from advancing the new session.
+    Check(gsSendSteam2(flatGS, 112, ticketG, sizeof(ticketG), authIP, authPort, NULL, 0),
+          "same-account reconnect before callback cleanup failed");
+    // The old payload must remain valid until the required FreeLastCallback call.
     GSClientSteam2AcceptPayload inFlightAfterDisconnect = {};
     std::memcpy(&inFlightAfterDisconnect, callback.m_pubParam, sizeof(inFlightAfterDisconnect));
     Check(inFlightAfterDisconnect.userID == 112 && inFlightAfterDisconnect.steamID == steamG,
           "disconnect invalidated an in-flight callback payload");
     freeCallback(flatPipe);
     callback = CallbackMsg_t();
-    Check(!getCallback(flatPipe, &callback), "in-flight disconnect left callback 201 queued");
-    Check(gsSendSteam2(flatGS, 113, ticketG, sizeof(ticketG), authIP, authPort, NULL, 0),
-          "identity was not reusable after in-flight disconnect");
-    callback = CallbackMsg_t();
-    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 205, "G reconnect missing callback 205");
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 205,
+          "same-account reconnect missing fresh callback 205");
+    GSClientSteam2AcceptPayload reconnectG = {};
+    std::memcpy(&reconnectG, callback.m_pubParam, sizeof(reconnectG));
+    Check(reconnectG.userID == 112 && reconnectG.steamID == steamG,
+          "same-account reconnect callback 205 mismatch");
     freeCallback(flatPipe);
     callback = CallbackMsg_t();
-    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 201, "G reconnect missing callback 201");
+    Check(getCallback(flatPipe, &callback) && callback.m_iCallback == 201,
+          "same-account reconnect missing fresh callback 201");
     freeCallback(flatPipe);
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "same-account reconnect left stale callbacks queued");
 
     // The account-only removal path must also cancel pending auth callbacks.
     const uint32_t hashF = 600000006u;
@@ -724,7 +732,7 @@ int main(int argc, char **argv)
     Check(gsSendUserDisconnect(flatGS, steamA, 105), "cleanup reconnected A failed");
     Check(gsSendUserDisconnect(flatGS, steamC, 107), "cleanup reconnected C failed");
     Check(gsSendUserDisconnect(flatGS, steamE, 109), "cleanup reconnected E failed");
-    Check(gsSendUserDisconnect(flatGS, steamG, 113), "cleanup reconnected G failed");
+    Check(gsSendUserDisconnect(flatGS, steamG, 112), "cleanup reconnected G failed");
     Check(gsSendUserDisconnect(flatGS, steamF, 111), "cleanup reconnected F failed");
     Check(gsSendUserDisconnect(flatGS, steamF, 111), "repeated disconnect should be idempotent");
     callback = CallbackMsg_t();
@@ -758,12 +766,20 @@ int main(int argc, char **argv)
           "M3.6 accepted auth must explicitly use ticket identity");
     Check(trace.find("identity_source=ip") == std::string::npos,
           "M3.6 must never use IP-derived identity fallback");
+    Check(trace.find("state=NEW->AUTH_PENDING reason=ticket_validated") != std::string::npos,
+          "M3.7 lifecycle did not record NEW -> AUTH_PENDING");
+    Check(trace.find("state=AUTH_PENDING->AUTHENTICATED reason=callback_205_consumed") != std::string::npos,
+          "M3.7 lifecycle did not record AUTH_PENDING -> AUTHENTICATED");
+    Check(trace.find("state=AUTHENTICATED->ACTIVE reason=callback_201_consumed") != std::string::npos,
+          "M3.7 lifecycle did not record AUTHENTICATED -> ACTIVE");
+    Check(trace.find("reason=stale_generation") != std::string::npos,
+          "M3.7 same-account reconnect did not exercise stale-generation isolation");
     Check(CountSubstring(trace, "first_call surface=flat name=Steam_RunCallbacks ") == 1,
           "ABI trace must record noisy calls only once");
     std::remove(tracePath);
-    std::puts("[PASS] M3.6 ABI/auth/state regression with first-call tracing");
+    std::puts("[PASS] M3.7 ABI/auth/lifecycle regression with first-call tracing");
 
     dlclose(library);
-    std::puts("M3.6 ABI/auth/state smoke PASS");
+    std::puts("M3.7 ABI/auth/lifecycle smoke PASS");
     return 0;
 }

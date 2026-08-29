@@ -140,7 +140,7 @@ void CSteamGameServer002::LogOn()
         if (!state.loggedOn)
         {
             state.loggedOn = true;
-            QueueCallbackLocked(state, kCallbackSteamServersConnected, NULL, 0, 0, 0, false);
+            QueueCallbackLocked(state, kCallbackSteamServersConnected, NULL, 0, 0, 0, false, 0);
             changed = true;
         }
     }
@@ -199,12 +199,23 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
 {
     TraceAbiCall("SteamGameServer002", "SendSteam2UserConnect", kAbiImplemented);
 
+    RuntimeState &state = Runtime();
+    Steam2AuthAttempt attempt;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        attempt = BeginSteam2AuthLocked(state, accountId);
+    }
+
     auth::AuthTicketIdentity identity;
     const auth::AuthTicketResult ticketResult = auth::ParseAndValidateAuthTicket(rawKey, rawKeyLen, &identity);
     const auth::AuthTicketType detectedType = auth::DetectAuthTicketType(rawKey, rawKeyLen);
 
     if (ticketResult != auth::kAuthTicketValid)
     {
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            AbortSteam2AuthLocked(state, accountId, attempt, auth::AuthTicketResultString(ticketResult));
+        }
         Log("Auth", "Steam2 ticket REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u type=%s reason=%s identity_source=ticket",
             accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
             auth::AuthTicketTypeString(detectedType), auth::AuthTicketResultString(ticketResult));
@@ -214,23 +225,25 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
     const CSteamID steamID = identity.steamID;
     const uint64 steamID64 = steamID.ConvertToUint64();
     Steam2RegistrationResult registration;
+    uint64 sessionGeneration = 0;
 
-    RuntimeState &state = Runtime();
     {
         std::lock_guard<std::mutex> lock(state.mutex);
-        registration = RegisterSteam2UserLocked(state, accountId, identity);
+        registration = CompleteSteam2UserLocked(state, accountId, attempt, identity, &sessionGeneration);
         if (registration == kSteam2RegistrationAccepted)
         {
-            // The identity insert and 205 -> 201 pair are one transaction.
-            // Whole client pairs may interleave only between transactions.
-            QueueSteam2AuthCallbacksLocked(state, accountId, steamID);
+            // Identity binding and the 205 -> 201 callback pair are one transaction.
+            // The generation token prevents stale callbacks from a prior account reuse
+            // from advancing a newly-created client session.
+            QueueSteam2AuthCallbacksLocked(state, accountId, steamID, sessionGeneration);
         }
     }
 
     char steam2[64];
     if (registration == kSteam2RegistrationAccountConflict ||
         registration == kSteam2RegistrationActiveReplay ||
-        registration == kSteam2RegistrationDuplicateSteamID)
+        registration == kSteam2RegistrationDuplicateSteamID ||
+        registration == kSteam2RegistrationAuthCanceled)
     {
         Log("Auth", "Steam2 auth REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u reason=%s type=%s identity_source=ticket steam2=%s steamid64=%llu ticket_fp=%016llx",
             accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
@@ -243,15 +256,15 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
 
     if (registration == kSteam2RegistrationIdempotent)
     {
-        Log("Auth", "Steam2 auth IDEMPOTENT account=%u type=%s identity_source=ticket steam2=%s steamid64=%llu callbacks=0",
-            accountId, auth::AuthTicketTypeString(identity.type),
+        Log("Auth", "Steam2 auth IDEMPOTENT account=%u generation=%llu type=%s identity_source=ticket steam2=%s steamid64=%llu callbacks=0",
+            accountId, static_cast<unsigned long long>(sessionGeneration), auth::AuthTicketTypeString(identity.type),
             Steam2String(steamID, steam2, sizeof(steam2)),
             static_cast<unsigned long long>(steamID64));
         return true;
     }
 
-    Log("Auth", "Steam2 auth ACCEPT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u type=%s identity_source=ticket steam2=%s steamid64=%llu ticket_fp=%016llx",
-        accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
+    Log("Auth", "Steam2 auth ACCEPT account=%u generation=%llu ip=0x%08x port=%u raw_len=%u cookie_len=%u type=%s identity_source=ticket steam2=%s steamid64=%llu ticket_fp=%016llx",
+        accountId, static_cast<unsigned long long>(sessionGeneration), ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
         auth::AuthTicketTypeString(identity.type),
         Steam2String(steamID, steam2, sizeof(steam2)),
         static_cast<unsigned long long>(steamID64),
@@ -277,10 +290,11 @@ bool CSteamGameServer002::GSRemoveUserConnect(uint32 accountId)
     RuntimeState &state = Runtime();
     size_t erased;
     size_t callbacksRemoved;
+    uint64 removedGeneration = 0;
     {
         std::lock_guard<std::mutex> lock(state.mutex);
-        erased = RemoveSteam2UserLocked(state, accountId);
-        callbacksRemoved = RemovePendingAuthCallbacksLocked(state, accountId);
+        erased = RemoveSteam2UserLocked(state, accountId, &removedGeneration);
+        callbacksRemoved = RemovePendingAuthCallbacksLocked(state, accountId, removedGeneration);
     }
     Log("Auth", "GSRemoveUserConnect account=%u state_removed=%u callbacks_removed=%u", accountId,
         static_cast<unsigned>(erased), static_cast<unsigned>(callbacksRemoved));
@@ -293,13 +307,21 @@ bool CSteamGameServer002::GSSendUserDisconnect(CSteamID steamID, uint32 accountI
     const uint64 steamID64 = steamID.ConvertToUint64();
     RuntimeState &state = Runtime();
     uint64 expectedSteamID = 0;
+    uint64 removedGeneration = 0;
     size_t callbacksRemoved = 0;
     Steam2DisconnectResult result;
     {
         std::lock_guard<std::mutex> lock(state.mutex);
-        result = DisconnectSteam2UserLocked(state, accountId, steamID, &expectedSteamID);
-        if (result == kSteam2DisconnectRemoved)
-            callbacksRemoved = RemovePendingAuthCallbacksLocked(state, accountId);
+        result = DisconnectSteam2UserLocked(state, accountId, steamID, &expectedSteamID, &removedGeneration);
+        if (result == kSteam2DisconnectRemoved || result == kSteam2DisconnectCanceledPendingAuth)
+            callbacksRemoved = RemovePendingAuthCallbacksLocked(state, accountId, removedGeneration);
+    }
+
+    if (result == kSteam2DisconnectCanceledPendingAuth)
+    {
+        Log("Auth", "GSSendUserDisconnect account=%u steamid64=%llu state=auth_canceled callbacks_removed=%u", accountId,
+            static_cast<unsigned long long>(steamID64), static_cast<unsigned>(callbacksRemoved));
+        return true;
     }
 
     if (result == kSteam2DisconnectAlreadyAbsent)

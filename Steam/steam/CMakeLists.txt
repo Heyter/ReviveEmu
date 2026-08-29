@@ -50,6 +50,7 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 		../steamclient_legacy/LegacySteamClient.cpp
 		../steamclient_legacy/LegacySteamRuntime.cpp
 		../steamclient_legacy/LegacySteamCallbacks.cpp
+		../steamclient_legacy/LegacySteamLifecycle.cpp
 		../steamclient_legacy/LegacySteamAuth.cpp
 		../steamclient_legacy/LegacySteamInterfaces.cpp
 		../steamclient_legacy/LegacySteamTrace.cpp
@@ -82,5 +83,20 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 		target_compile_options(steamclient_auth_ticket_smoke PRIVATE -Wall -Wextra -Werror)
 		add_test(NAME steamclient_auth_ticket
 			COMMAND steamclient_auth_ticket_smoke)
+
+		add_executable(steamclient_lifecycle_smoke
+			../steamclient_legacy/tests/LegacyClientLifecycleSmoke.cpp
+			../steamclient_legacy/LegacySteamRuntime.cpp
+			../steamclient_legacy/LegacySteamLifecycle.cpp
+			../steamclient_legacy/LegacySteamAuth.cpp
+			../steamclient_legacy/auth/LegacyAuthTicket.cpp
+			../steamclient_legacy/auth/ClassicRevEmuTicket.cpp
+		)
+		target_include_directories(steamclient_lifecycle_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+		target_compile_definitions(steamclient_lifecycle_smoke PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
+		target_compile_options(steamclient_lifecycle_smoke PRIVATE -Wall -Wextra -Werror)
+		target_link_libraries(steamclient_lifecycle_smoke PRIVATE pthread)
+		add_test(NAME steamclient_client_lifecycle
+			COMMAND steamclient_lifecycle_smoke)
 	endif()
 endif()
