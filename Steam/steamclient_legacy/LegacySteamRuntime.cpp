@@ -11,6 +11,11 @@ namespace revive
 namespace legacy
 {
 
+Steam2AuthSession::Steam2AuthSession()
+    : steamID(), ticketFingerprint(0), ticketType(0)
+{
+}
+
 MasterServerState::MasterServerState()
     : active(false),
       heartbeatInterval(-1),

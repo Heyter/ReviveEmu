@@ -3,7 +3,7 @@
 #include <cstring>
 #include <ctime>
 
-#include "../steam/ClassicRevEmuTicket.h"
+#include "auth/LegacyAuthTicket.h"
 #include "LegacySteamAuth.h"
 #include "LegacySteamCallbacks.h"
 #include "LegacySteamTrace.h"
@@ -198,25 +198,27 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
                                                   uint32 cookieLen)
 {
     TraceAbiCall("SteamGameServer002", "SendSteam2UserConnect", kAbiImplemented);
-    ClassicRevEmuTicketInfo info;
-    const ClassicRevEmuTicketResult ticketResult = ValidateClassicRevEmuTicket(rawKey, rawKeyLen, &info);
 
-    if (ticketResult != kClassicRevEmuTicketValid)
+    auth::AuthTicketIdentity identity;
+    const auth::AuthTicketResult ticketResult = auth::ParseAndValidateAuthTicket(rawKey, rawKeyLen, &identity);
+    const auth::AuthTicketType detectedType = auth::DetectAuthTicketType(rawKey, rawKeyLen);
+
+    if (ticketResult != auth::kAuthTicketValid)
     {
-        Log("Auth", "Steam2 auth REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u reason=%s",
+        Log("Auth", "Steam2 ticket REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u type=%s reason=%s identity_source=ticket",
             accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
-            ClassicRevEmuTicketResultString(ticketResult));
+            auth::AuthTicketTypeString(detectedType), auth::AuthTicketResultString(ticketResult));
         return false;
     }
 
-    const CSteamID steamID = info.steamID;
+    const CSteamID steamID = identity.steamID;
     const uint64 steamID64 = steamID.ConvertToUint64();
     Steam2RegistrationResult registration;
 
     RuntimeState &state = Runtime();
     {
         std::lock_guard<std::mutex> lock(state.mutex);
-        registration = RegisterSteam2UserLocked(state, accountId, steamID);
+        registration = RegisterSteam2UserLocked(state, accountId, identity);
         if (registration == kSteam2RegistrationAccepted)
         {
             // The identity insert and 205 -> 201 pair are one transaction.
@@ -227,30 +229,35 @@ bool CSteamGameServer002::GSSendSteam2UserConnect(uint32 accountId,
 
     char steam2[64];
     if (registration == kSteam2RegistrationAccountConflict ||
+        registration == kSteam2RegistrationActiveReplay ||
         registration == kSteam2RegistrationDuplicateSteamID)
     {
-        Log("Auth", "Steam2 auth REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u reason=%s steam2=%s steamid64=%llu",
+        Log("Auth", "Steam2 auth REJECT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u reason=%s type=%s identity_source=ticket steam2=%s steamid64=%llu ticket_fp=%016llx",
             accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
-            Steam2RegistrationResultString(registration),
+            Steam2RegistrationResultString(registration), auth::AuthTicketTypeString(identity.type),
             Steam2String(steamID, steam2, sizeof(steam2)),
-            static_cast<unsigned long long>(steamID64));
+            static_cast<unsigned long long>(steamID64),
+            static_cast<unsigned long long>(identity.fingerprint));
         return false;
     }
 
     if (registration == kSteam2RegistrationIdempotent)
     {
-        Log("Auth", "Steam2 auth IDEMPOTENT account=%u steam2=%s steamid64=%llu callbacks=0",
-            accountId, Steam2String(steamID, steam2, sizeof(steam2)),
+        Log("Auth", "Steam2 auth IDEMPOTENT account=%u type=%s identity_source=ticket steam2=%s steamid64=%llu callbacks=0",
+            accountId, auth::AuthTicketTypeString(identity.type),
+            Steam2String(steamID, steam2, sizeof(steam2)),
             static_cast<unsigned long long>(steamID64));
         return true;
     }
 
-    Log("Auth", "GSSendSteam2UserConnect account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u type=ClassicRevEmu steam2=%s steamid64=%llu",
+    Log("Auth", "Steam2 auth ACCEPT account=%u ip=0x%08x port=%u raw_len=%u cookie_len=%u type=%s identity_source=ticket steam2=%s steamid64=%llu ticket_fp=%016llx",
         accountId, ip, static_cast<unsigned>(port), rawKeyLen, cookieLen,
+        auth::AuthTicketTypeString(identity.type),
         Steam2String(steamID, steam2, sizeof(steam2)),
-        static_cast<unsigned long long>(steamID64));
+        static_cast<unsigned long long>(steamID64),
+        static_cast<unsigned long long>(identity.fingerprint));
     Log("Auth", "ClassicRevEmu hash=%u steamid_low=0x%08x steamid_high=0x%08x",
-        info.hash, info.steamIDLow, info.steamIDHigh);
+        identity.classicHash, identity.classicSteamIDLow, identity.classicSteamIDHigh);
     return true;
 }
 

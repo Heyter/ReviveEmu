@@ -28,10 +28,17 @@ list(REMOVE_ITEM MAIN_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Win32MiniDump.cpp")
 target_sources(steam PRIVATE
 ${MAIN_SOURCES}
 ${ZLIB_SOURCES}
+../steamclient_legacy/auth/ClassicRevEmuTicket.cpp
 )
 
 if(CMAKE_SYSTEM_NAME MATCHES Linux)
-	add_library(steamvalidateuseridtickets SHARED Steam.cpp logFile.cpp strtools.cpp strtools_unicode.cpp)
+	add_library(steamvalidateuseridtickets SHARED
+		Steam.cpp
+		logFile.cpp
+		strtools.cpp
+		strtools_unicode.cpp
+		../steamclient_legacy/auth/ClassicRevEmuTicket.cpp
+	)
 	target_compile_definitions(steamvalidateuseridtickets PRIVATE VALIDATOR_DLL ${COMMON_MACROS} ${PLATFORM_MACROS})
 	target_link_libraries(steamvalidateuseridtickets PRIVATE dl pthread)
 
@@ -46,6 +53,8 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 		../steamclient_legacy/LegacySteamAuth.cpp
 		../steamclient_legacy/LegacySteamInterfaces.cpp
 		../steamclient_legacy/LegacySteamTrace.cpp
+		../steamclient_legacy/auth/ClassicRevEmuTicket.cpp
+		../steamclient_legacy/auth/LegacyAuthTicket.cpp
 	)
 	target_include_directories(steamclient PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	target_compile_definitions(steamclient PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
@@ -62,5 +71,16 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 		target_link_libraries(steamclient_abi_smoke PRIVATE dl pthread)
 		add_test(NAME steamclient_legacy_abi
 			COMMAND steamclient_abi_smoke $<TARGET_FILE:steamclient>)
+
+		add_executable(steamclient_auth_ticket_smoke
+			../steamclient_legacy/tests/LegacyAuthTicketSmoke.cpp
+			../steamclient_legacy/auth/ClassicRevEmuTicket.cpp
+			../steamclient_legacy/auth/LegacyAuthTicket.cpp
+		)
+		target_include_directories(steamclient_auth_ticket_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+		target_compile_definitions(steamclient_auth_ticket_smoke PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
+		target_compile_options(steamclient_auth_ticket_smoke PRIVATE -Wall -Wextra -Werror)
+		add_test(NAME steamclient_auth_ticket
+			COMMAND steamclient_auth_ticket_smoke)
 	endif()
 endif()

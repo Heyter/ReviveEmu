@@ -242,8 +242,8 @@ int main(int argc, char **argv)
     BuildMarkerFn buildMarker = Sym<BuildMarkerFn>(library, "REVive_LegacySteamClient_BuildMarker");
 
     const char *marker = buildMarker();
-    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.5-dev.2") == 0,
-          "unexpected M3.5 build marker");
+    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.6-dev.1") == 0,
+          "unexpected M3.6 build marker");
 
     int rc = -1;
     void *client = createInterface("SteamClient006", &rc);
@@ -572,9 +572,19 @@ int main(int argc, char **argv)
     Check(!getCallback(flatPipe, &callback), "unexpected callback after concurrent auth pairs");
     std::puts("[PASS] 4-client concurrent callback pairing and identity payloads");
 
-    // Active duplicate SteamID: reject a second account while A is active.
+    // Active replay: the exact same ticket cannot establish a second active account.
     Check(!gsSendSteam2(flatGS, 105, ticketA, sizeof(ticketA), authIP, authPort, NULL, 0),
-          "active duplicate SteamID must reject the new account");
+          "active replay must reject the new account");
+    callback = CallbackMsg_t();
+    Check(!getCallback(flatPipe, &callback), "active replay reject queued callbacks");
+
+    // A different ticket byte sequence that resolves to the same SteamID is a
+    // duplicate identity rather than an exact replay; it is rejected as well.
+    uint8_t ticketASameIdentity[kClassicTicketSize];
+    std::memcpy(ticketASameIdentity, ticketA, sizeof(ticketASameIdentity));
+    ticketASameIdentity[0x18] ^= 0x40u;
+    Check(!gsSendSteam2(flatGS, 106, ticketASameIdentity, sizeof(ticketASameIdentity), authIP, authPort, NULL, 0),
+          "duplicate SteamID with a different ticket fingerprint must reject the new account");
     callback = CallbackMsg_t();
     Check(!getCallback(flatPipe, &callback), "duplicate SteamID reject queued callbacks");
 
@@ -739,12 +749,21 @@ int main(int argc, char **argv)
           "ABI trace did not record SteamClient006 resolution");
     Check(trace.find("[ReviveEmu][ABI] first_call surface=flat name=Steam_GSSendSteam2UserConnect support=implemented") != std::string::npos,
           "ABI trace did not record flat Steam2 auth entrypoint");
+    Check(trace.find("reason=active_ticket_replay") != std::string::npos,
+          "M3.6 active replay classification was not logged");
+    Check(trace.find("reason=duplicate_steamid") != std::string::npos,
+          "M3.6 duplicate SteamID classification was not logged");
+    Check(trace.find("Steam2 auth ACCEPT") != std::string::npos &&
+          trace.find("identity_source=ticket") != std::string::npos,
+          "M3.6 accepted auth must explicitly use ticket identity");
+    Check(trace.find("identity_source=ip") == std::string::npos,
+          "M3.6 must never use IP-derived identity fallback");
     Check(CountSubstring(trace, "first_call surface=flat name=Steam_RunCallbacks ") == 1,
           "ABI trace must record noisy calls only once");
     std::remove(tracePath);
-    std::puts("[PASS] M3.5 first-call ABI tracing and interface query capture");
+    std::puts("[PASS] M3.6 ABI/auth/state regression with first-call tracing");
 
     dlclose(library);
-    std::puts("M3.5 ABI/auth/state smoke PASS");
+    std::puts("M3.6 ABI/auth/state smoke PASS");
     return 0;
 }

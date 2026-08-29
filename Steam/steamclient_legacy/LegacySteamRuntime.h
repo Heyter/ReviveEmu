@@ -70,6 +70,15 @@ struct MasterServerState
     bool heartbeatForced;
 };
 
+struct Steam2AuthSession
+{
+    Steam2AuthSession();
+
+    CSteamID steamID;
+    uint64 ticketFingerprint;
+    uint32 ticketType;
+};
+
 struct RuntimeState
 {
     RuntimeState();
@@ -81,7 +90,7 @@ struct RuntimeState
     bool loggedOn;
     uint32 localIP;
     uint16 localPort;
-    std::map<uint32, CSteamID> steam2Users;
+    std::map<uint32, Steam2AuthSession> steam2Users;
     MasterServerState masterServer;
     uint32 botCounter;
 };
