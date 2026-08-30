@@ -5,6 +5,10 @@
 #include "LegacySteamRuntime.h"
 #include "LegacySteamTrace.h"
 
+#ifndef REVIVE_LEGACY_MILESTONE
+#define REVIVE_LEGACY_MILESTONE "dev"
+#endif
+
 #if defined(__GNUC__)
 #define REVIVE_EXPORT extern "C" __attribute__((visibility("default")))
 #else
@@ -316,5 +320,5 @@ REVIVE_EXPORT void Steam_TerminateGameConnection(HSteamUser user, HSteamPipe pip
 
 REVIVE_EXPORT const char *REVive_LegacySteamClient_BuildMarker()
 {
-    return "REVive legacy SteamClient006 backend M3.9-dev.1";
+    return "REVive legacy SteamClient006 backend " REVIVE_LEGACY_MILESTONE;
 }

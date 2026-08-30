@@ -6,6 +6,8 @@ include(CTest)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 11)
 
+set(REVIVE_LEGACY_MILESTONE "dev" CACHE STRING "Legacy SteamClient build marker milestone")
+
 set(COMMON_MACROS STEAM_EXPORTS GNUC POSIX _POSIX _FILE_OFFSET_BITS=64 Z_HAVE_UNISTD_H)
 
 if(CMAKE_SYSTEM_NAME MATCHES Linux)
@@ -58,7 +60,7 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 		../steamclient_legacy/auth/LegacyAuthTicket.cpp
 	)
 	target_include_directories(steamclient PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-	target_compile_definitions(steamclient PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
+	target_compile_definitions(steamclient PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS} REVIVE_LEGACY_MILESTONE="${REVIVE_LEGACY_MILESTONE}")
 	target_compile_options(steamclient PRIVATE -Wall -Wextra -Werror)
 	target_link_libraries(steamclient PRIVATE dl pthread)
 	set_target_properties(steamclient PROPERTIES
@@ -69,6 +71,7 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 
 	if(BUILD_TESTING)
 		add_executable(steamclient_abi_smoke ../steamclient_legacy/tests/LegacySteamAbiSmoke.cpp)
+		target_compile_definitions(steamclient_abi_smoke PRIVATE REVIVE_LEGACY_MILESTONE="${REVIVE_LEGACY_MILESTONE}")
 		target_link_libraries(steamclient_abi_smoke PRIVATE dl pthread)
 		add_test(NAME steamclient_legacy_abi
 			COMMAND steamclient_abi_smoke $<TARGET_FILE:steamclient>)
@@ -130,5 +133,17 @@ if(CMAKE_SYSTEM_NAME MATCHES Linux)
 		target_link_libraries(steamclient_robustness_stress PRIVATE pthread)
 		add_test(NAME steamclient_robustness_stress
 			COMMAND steamclient_robustness_stress)
+
+		add_executable(steamclient_production_baseline_smoke
+			../steamclient_legacy/tests/LegacyProductionBaselineSmoke.cpp
+			../steamclient_legacy/LegacySteamRuntime.cpp
+			../steamclient_legacy/LegacySteamLifecycle.cpp
+		)
+		target_include_directories(steamclient_production_baseline_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+		target_compile_definitions(steamclient_production_baseline_smoke PRIVATE ${COMMON_MACROS} ${PLATFORM_MACROS})
+		target_compile_options(steamclient_production_baseline_smoke PRIVATE -Wall -Wextra -Werror)
+		target_link_libraries(steamclient_production_baseline_smoke PRIVATE pthread)
+		add_test(NAME steamclient_production_baseline
+			COMMAND steamclient_production_baseline_smoke)
 	endif()
 endif()

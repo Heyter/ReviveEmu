@@ -11,6 +11,10 @@
 
 #include "../LegacySteamAbiReference.h"
 
+#ifndef REVIVE_LEGACY_MILESTONE
+#define REVIVE_LEGACY_MILESTONE "dev"
+#endif
+
 namespace
 {
 
@@ -242,7 +246,7 @@ int main(int argc, char **argv)
     BuildMarkerFn buildMarker = Sym<BuildMarkerFn>(library, "REVive_LegacySteamClient_BuildMarker");
 
     const char *marker = buildMarker();
-    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend M3.9-dev.1") == 0,
+    Check(marker && std::strcmp(marker, "REVive legacy SteamClient006 backend " REVIVE_LEGACY_MILESTONE) == 0,
           "unexpected M3.9 build marker");
 
     int rc = -1;

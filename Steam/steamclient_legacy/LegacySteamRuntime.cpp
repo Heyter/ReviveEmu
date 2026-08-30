@@ -11,6 +11,37 @@ namespace revive
 namespace legacy
 {
 
+namespace
+{
+
+bool ProductionLogComponent(const char *component)
+{
+    if (!component)
+        return false;
+
+    return std::strcmp(component, "Auth") == 0 ||
+           std::strcmp(component, "Lifecycle") == 0 ||
+           std::strcmp(component, "ABI") == 0;
+}
+
+bool LogEnabledForComponent(const char *component)
+{
+    const char *mode = std::getenv("REVIVE_LOG_MODE");
+    if (!mode || !*mode || std::strcmp(mode, "diagnostic") == 0 || std::strcmp(mode, "verbose") == 0)
+        return true;
+    if (std::strcmp(mode, "off") == 0)
+        return false;
+    if (std::strcmp(mode, "production") == 0 || std::strcmp(mode, "normal") == 0)
+        return ProductionLogComponent(component);
+
+    // Unknown values deliberately fall back to diagnostic logging instead of
+    // silently hiding operational information. start.sh validates production
+    // deployments before the process reaches this point.
+    return true;
+}
+
+} // namespace
+
 Steam2AuthSession::Steam2AuthSession()
     : steamID(), ticketFingerprint(0), ticketType(0), generation(0),
       lifecycle(kClientLifecycleNew), identityBound(false)
@@ -54,6 +85,9 @@ RuntimeState &Runtime()
 
 void Log(const char *component, const char *fmt, ...)
 {
+    if (!LogEnabledForComponent(component))
+        return;
+
     static std::mutex logMutex;
     std::lock_guard<std::mutex> lock(logMutex);
 
