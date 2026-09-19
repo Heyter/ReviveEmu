@@ -18,7 +18,22 @@ GitLab Runner:
 4. запускает CTest;
 5. копирует необходимые Linux `.so` из `bin-deps`;
 6. формирует готовую структуру `server_v34`;
-7. публикует директорию и `.tar.gz` как GitLab artifacts.
+7. сохраняет пакет как временный GitLab job artifact и публикует `.tar.gz` вместе с checksum в **GitHub Releases**.
+
+
+Собирается только Linux x86/i386. x64-сборки не создаются.
+
+Чтобы GitLab Runner публиковал сборку в GitHub Releases, в GitLab → Settings → CI/CD → Variables нужно добавить:
+
+- `GITHUB_TOKEN` — fine-grained GitHub token с `Contents: Read and write`; так как в репозитории изменяются workflow-файлы, также дать `Workflows: Read and write`. Переменную хранить как Masked/Hidden и, если `prod` защищена, Protected.
+- `GITHUB_REPOSITORY` — целевой GitHub-репозиторий в формате `owner/repository`. По умолчанию используется GitLab `$CI_PROJECT_PATH`, поэтому при отличающемся GitHub owner/path значение нужно задать явно.
+
+Release job создаёт GitHub Release с тегом `0.0.<CI_PIPELINE_IID>` и загружает:
+
+```text
+ReviveEmu-server_v34-prod.tar.gz
+ReviveEmu-server_v34-prod.tar.gz.sha256
+```
 
 Точка входа сборки:
 

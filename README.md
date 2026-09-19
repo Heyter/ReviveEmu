@@ -20,7 +20,22 @@ The GitLab Runner:
 4. runs CTest;
 5. copies required Linux runtime `.so` files from `bin-deps`;
 6. creates a ready-to-extract `server_v34` runtime layout;
-7. publishes the directory and `.tar.gz` as GitLab artifacts.
+7. keeps the package as a temporary GitLab job artifact and publishes the `.tar.gz` plus checksum to **GitHub Releases**.
+
+
+Only Linux x86/i386 is built. x64 builds are not produced.
+
+To publish from GitLab Runner to GitHub, configure these GitLab CI/CD variables:
+
+- `GITHUB_TOKEN` — fine-grained GitHub token with `Contents: Read and write`; because this repository contains workflow changes, grant `Workflows: Read and write` as well. Store it as Masked/Hidden and Protected if `prod` is protected.
+- `GITHUB_REPOSITORY` — GitHub target in `owner/repository` format. It defaults to the GitLab `$CI_PROJECT_PATH`, so set it explicitly when the GitHub owner/path differs.
+
+The release job creates a GitHub release tagged `0.0.<CI_PIPELINE_IID>` and uploads:
+
+```text
+ReviveEmu-server_v34-prod.tar.gz
+ReviveEmu-server_v34-prod.tar.gz.sha256
+```
 
 Build entry point:
 

@@ -1,40 +1,37 @@
-name: ReviveEmu Linux build
+name: ReviveEmu Linux x86 build
 
 on: [push, pull_request, workflow_dispatch]
 
 jobs:
-  build-linux:
-    name: ${{ matrix.name }}
+  build-linux-x86:
+    name: Linux x86/i386
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        include:
-          - name: "Linux 32-bit"
-            gccflags: "-m32"
-          - name: "Linux 64-bit"
-            gccflags: "-m64"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install 32-bit toolchain
-        if: matrix.name == 'Linux 32-bit'
+      - name: Install x86 toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386
+          sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386 cmake ninja-build
 
-      - name: Run CMake
+      - name: Configure
         shell: bash
         working-directory: Steam/steam
-        run: cmake -B ./build -DCMAKE_C_FLAGS="${{ matrix.gccflags }}" -DCMAKE_CXX_FLAGS="${{ matrix.gccflags }}"
+        run: |
+          cmake -S . -B ./build -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_C_FLAGS="-m32" \
+            -DCMAKE_CXX_FLAGS="-m32" \
+            -DCMAKE_EXE_LINKER_FLAGS="-m32" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-m32"
 
       - name: Build
         shell: bash
         working-directory: Steam/steam
         run: cmake --build ./build
 
-      - name: Run legacy ABI smoke tests
+      - name: Run tests
         shell: bash
         working-directory: Steam/steam
         run: ctest --test-dir ./build --output-on-failure

@@ -6,6 +6,10 @@ variables:
   DEBIAN_FRONTEND: noninteractive
   REVIVE_RELEASE_DIR: "$CI_PROJECT_DIR/releases"
   REVIVE_RELEASE_NAME: "ReviveEmu-server_v34-prod"
+  # Override this in GitLab CI/CD variables if the GitHub owner/name differs
+  # from the GitLab project path.
+  GITHUB_REPOSITORY: "$CI_PROJECT_PATH"
+  GITHUB_TARGET_COMMITISH: "prod"
 
 reviveemu:prod:server-v34:
   stage: build
@@ -38,28 +42,23 @@ reviveemu:prod:server-v34:
     paths:
       - releases/ReviveEmu-server_v34-prod/
       - releases/ReviveEmu-server_v34-prod.tar.gz
+      - releases/ReviveEmu-server_v34-prod.tar.gz.sha256
 
-reviveemu:release:server-v34:
+reviveemu:release:github:
   stage: release
-  image: registry.gitlab.com/gitlab-org/cli:latest
+  image: alpine:3.20
   interruptible: false
   needs:
     - job: reviveemu:prod:server-v34
       artifacts: true
   rules:
     - if: '$CI_COMMIT_BRANCH == "prod"'
-  variables:
-    GLAB_ENABLE_CI_AUTOLOGIN: "true"
+  before_script:
+    - apk add --no-cache ca-certificates curl jq
   script:
+    - test -n "$GITHUB_TOKEN" || { echo "GITHUB_TOKEN GitLab CI/CD variable is required" >&2; exit 1; }
+    - test -n "$GITHUB_REPOSITORY" || { echo "GITHUB_REPOSITORY owner/repo is required" >&2; exit 1; }
     - test -s releases/ReviveEmu-server_v34-prod.tar.gz
-    - RELEASE_TAG="0.0.${CI_PIPELINE_IID}"
-    - RELEASE_TITLE="ReviveEmu server_v34 prod ${CI_COMMIT_SHORT_SHA}"
-    - >-
-      glab release create "$RELEASE_TAG"
-      "releases/ReviveEmu-server_v34-prod.tar.gz#ReviveEmu server_v34 Linux i386#package"
-      --repo "$CI_PROJECT_PATH"
-      --ref "$CI_COMMIT_SHA"
-      --name "$RELEASE_TITLE"
-      --notes "Production Linux i386 package for CS:S V34 / Build 4100. Commit: ${CI_COMMIT_SHA}. Pipeline: ${CI_PIPELINE_URL}."
-      --use-package-registry
-      --package-name "reviveemu-server-v34"
+    - test -s releases/ReviveEmu-server_v34-prod.tar.gz.sha256
+    - chmod +x releases/publish-github-release.sh
+    - GITHUB_RELEASE_TAG="0.0.${CI_PIPELINE_IID}" GITHUB_RELEASE_TITLE="ReviveEmu server_v34 prod ${CI_COMMIT_SHORT_SHA}" releases/publish-github-release.sh
