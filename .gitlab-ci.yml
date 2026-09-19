@@ -1,5 +1,6 @@
 stages:
   - build
+  - release
 
 variables:
   DEBIAN_FRONTEND: noninteractive
@@ -37,3 +38,28 @@ reviveemu:prod:server-v34:
     paths:
       - releases/ReviveEmu-server_v34-prod/
       - releases/ReviveEmu-server_v34-prod.tar.gz
+
+reviveemu:release:server-v34:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  interruptible: false
+  needs:
+    - job: reviveemu:prod:server-v34
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "prod"'
+  variables:
+    GLAB_ENABLE_CI_AUTOLOGIN: "true"
+  script:
+    - test -s releases/ReviveEmu-server_v34-prod.tar.gz
+    - RELEASE_TAG="0.0.${CI_PIPELINE_IID}"
+    - RELEASE_TITLE="ReviveEmu server_v34 prod ${CI_COMMIT_SHORT_SHA}"
+    - >-
+      glab release create "$RELEASE_TAG"
+      "releases/ReviveEmu-server_v34-prod.tar.gz#ReviveEmu server_v34 Linux i386#package"
+      --repo "$CI_PROJECT_PATH"
+      --ref "$CI_COMMIT_SHA"
+      --name "$RELEASE_TITLE"
+      --notes "Production Linux i386 package for CS:S V34 / Build 4100. Commit: ${CI_COMMIT_SHA}. Pipeline: ${CI_PIPELINE_URL}."
+      --use-package-registry
+      --package-name "reviveemu-server-v34"
