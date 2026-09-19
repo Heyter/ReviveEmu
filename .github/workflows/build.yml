@@ -12,10 +12,8 @@ jobs:
         include:
           - name: "Linux 32-bit"
             gccflags: "-m32"
-            outname: "ReviveEmu-Linux32"
           - name: "Linux 64-bit"
             gccflags: "-m64"
-            outname: "ReviveEmu-Linux64"
 
     steps:
       - uses: actions/checkout@v4
@@ -40,53 +38,3 @@ jobs:
         shell: bash
         working-directory: Steam/steam
         run: ctest --test-dir ./build --output-on-failure
-
-      - name: Prepare files for packaging
-        shell: bash
-        run: |
-          mkdir ./artifacts
-          cp ./Steam/steam/build/libsteam.so ./artifacts/libsteam.so
-          cp ./Steam/steam/build/libsteamvalidateuseridtickets.so ./artifacts/libsteamvalidateuseridtickets.so
-          cp ./Steam/steam/build/libsteamclient.so ./artifacts/libsteamclient.so
-          cp ./Steam/steam/build/steamclient_abi_smoke ./artifacts/steamclient_abi_smoke
-          cp ./Steam/steam/rev.ini ./artifacts/rev.ini
-          cp ./Steam/steam/revApps.ini ./artifacts/revApps.ini
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.outname }}
-          path: artifacts
-          if-no-files-found: error
-
-  create-release:
-    name: Create Linux release
-    needs: [build-linux]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./artifacts/
-
-      - name: Display downloaded artifacts
-        run: find ./artifacts/
-
-      - name: Create release files
-        run: |
-          mkdir release
-          for DIR in ./artifacts/*; do
-            NAME=$(basename "$DIR")
-            tar -C "$DIR" -czf "$GITHUB_WORKSPACE/release/$NAME.tar.gz" .
-          done
-
-      - name: Create rolling release
-        uses: "marvinpinto/action-automatic-releases@latest"
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          automatic_release_tag: "latest"
-          prerelease: false
-          title: "Latest rolling release"
-          files: |
-            ./release/*
