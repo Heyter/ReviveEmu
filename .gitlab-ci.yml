@@ -1,20 +1,15 @@
 stages:
   - build
-  - release
 
 variables:
   DEBIAN_FRONTEND: noninteractive
   REVIVE_RELEASE_DIR: "$CI_PROJECT_DIR/releases"
   REVIVE_RELEASE_NAME: "ReviveEmu-server_v34-prod"
-  # Override this in GitLab CI/CD variables if the GitHub owner/name differs
-  # from the GitLab project path.
-  GITHUB_REPOSITORY: "$CI_PROJECT_PATH"
-  GITHUB_TARGET_COMMITISH: "prod"
 
 reviveemu:prod:server-v34:
   stage: build
   image: debian:12-slim
-  interruptible: true
+  interruptible: false
   rules:
     - if: '$CI_COMMIT_BRANCH == "prod"'
   before_script:
@@ -31,10 +26,23 @@ reviveemu:prod:server-v34:
       patchelf
       gcc-multilib
       g++-multilib
+      curl
+      jq
     - rm -rf /var/lib/apt/lists/*
   script:
-    - chmod +x releases/build-prod.sh releases/server_v34/cleanup-old-emulators.sh
+    - test -f releases/build-prod.sh || { echo "releases/build-prod.sh is missing from Git" >&2; exit 1; }
+    - test -f releases/server_v34/cleanup-old-emulators.sh || { echo "release template is missing" >&2; exit 1; }
+    - chmod +x releases/build-prod.sh releases/publish-github-release.sh releases/server_v34/cleanup-old-emulators.sh
     - REVIVE_LEGACY_MILESTONE="prod-${CI_COMMIT_SHORT_SHA}" releases/build-prod.sh
+    - test -s releases/ReviveEmu-server_v34-prod.tar.gz
+    - test -s releases/ReviveEmu-server_v34-prod.tar.gz.sha256
+    - test -n "${GITHUB_TOKEN:-}" || { echo "GITHUB_TOKEN is not available. Add it in GitLab Settings -> CI/CD -> Variables. If it is Protected, the prod branch must also be protected." >&2; exit 1; }
+    - test -n "${GITHUB_REPOSITORY:-}" || { echo "GITHUB_REPOSITORY is required, for example owner/ReviveEmu" >&2; exit 1; }
+    - >-
+      GITHUB_RELEASE_TAG="0.0.${CI_PIPELINE_IID}"
+      GITHUB_RELEASE_TITLE="ReviveEmu server_v34 prod ${CI_COMMIT_SHORT_SHA}"
+      releases/publish-github-release.sh
+    - echo "GitHub Release publication verified successfully."
   artifacts:
     name: "reviveemu-server-v34-prod-${CI_COMMIT_SHORT_SHA}"
     when: on_success
@@ -43,22 +51,3 @@ reviveemu:prod:server-v34:
       - releases/ReviveEmu-server_v34-prod/
       - releases/ReviveEmu-server_v34-prod.tar.gz
       - releases/ReviveEmu-server_v34-prod.tar.gz.sha256
-
-reviveemu:release:github:
-  stage: release
-  image: alpine:3.20
-  interruptible: false
-  needs:
-    - job: reviveemu:prod:server-v34
-      artifacts: true
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "prod"'
-  before_script:
-    - apk add --no-cache ca-certificates curl jq
-  script:
-    - test -n "$GITHUB_TOKEN" || { echo "GITHUB_TOKEN GitLab CI/CD variable is required" >&2; exit 1; }
-    - test -n "$GITHUB_REPOSITORY" || { echo "GITHUB_REPOSITORY owner/repo is required" >&2; exit 1; }
-    - test -s releases/ReviveEmu-server_v34-prod.tar.gz
-    - test -s releases/ReviveEmu-server_v34-prod.tar.gz.sha256
-    - chmod +x releases/publish-github-release.sh
-    - GITHUB_RELEASE_TAG="0.0.${CI_PIPELINE_IID}" GITHUB_RELEASE_TITLE="ReviveEmu server_v34 prod ${CI_COMMIT_SHORT_SHA}" releases/publish-github-release.sh
