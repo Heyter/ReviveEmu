@@ -22,7 +22,6 @@ The GitLab Runner:
 6. creates a ready-to-extract `server_v34` runtime layout;
 7. keeps the package as a temporary GitLab job artifact and publishes the `.tar.gz` plus checksum to **GitHub Releases**.
 
-
 Only Linux x86/i386 is built. x64 builds are not produced.
 
 To publish from GitLab Runner to GitHub, configure these GitLab CI/CD variables:
@@ -187,26 +186,26 @@ ReviveEmu first looks for `rev.ini` next to its library and then in the process 
 
 ### `[Emulator]`
 
-| Key | Values / default | Purpose |
-| --- | --- | --- |
-| `CacheEnabled` | `True` / `False`, default `False` | Enables the legacy Steam GCF cache filesystem. Keep `False` for the normal loose-file `server_v34` deployment. |
-| `CachePath` | filesystem path | Directory containing `.gcf` files. Used only when `CacheEnabled=True`. |
-| `CDRPath` | file path; default `cdr.bin` next to `rev.ini` | Optional raw Content Description Record used for old GCF/cache metadata. |
-| `Language` | Steam language name; default `English` | Selects the legacy Steam language used for localized cache/content requirements. |
-| `Logging` | `True` / `False`, default `False` | Enables the classic `rev.log`. The `[Log]` switches below select extra log groups. |
-| `SteamUser` | string, default `RevUser` | Emulated legacy Steam username. `ReviveServer` is recommended for the dedicated server. |
-| `CompatibilityMode` | `None` or `2003`, default `None` | Enables compatibility behavior for very old engine builds. CS:S V34 uses `None`. |
-| `ForceRevClient` | `True` / `False`, default `False` | Rejects unknown/non-Revive tickets in the classic validator path when enabled. The current `server_v34` configuration keeps it `False`; the Linux legacy SteamClient backend performs its own ClassicRevEmu ticket validation. |
+| Key                 | Values / default                               | Purpose                                                                                                                                                                                                                        |
+| ------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CacheEnabled`      | `True` / `False`, default `False`              | Enables the legacy Steam GCF cache filesystem. Keep `False` for the normal loose-file `server_v34` deployment.                                                                                                                 |
+| `CachePath`         | filesystem path                                | Directory containing `.gcf` files. Used only when `CacheEnabled=True`.                                                                                                                                                         |
+| `CDRPath`           | file path; default `cdr.bin` next to `rev.ini` | Optional raw Content Description Record used for old GCF/cache metadata.                                                                                                                                                       |
+| `Language`          | Steam language name; default `English`         | Selects the legacy Steam language used for localized cache/content requirements.                                                                                                                                               |
+| `Logging`           | `True` / `False`, default `False`              | Enables the classic `rev.log`. The `[Log]` switches below select extra log groups.                                                                                                                                             |
+| `SteamUser`         | string, default `RevUser`                      | Emulated legacy Steam username. `ReviveServer` is recommended for the dedicated server.                                                                                                                                        |
+| `CompatibilityMode` | `None` or `2003`, default `None`               | Enables compatibility behavior for very old engine builds. CS:S V34 uses `None`.                                                                                                                                               |
+| `ForceRevClient`    | `True` / `False`, default `False`              | Rejects unknown/non-Revive tickets in the classic validator path when enabled. The current `server_v34` configuration keeps it `False`; the Linux legacy SteamClient backend performs its own ClassicRevEmu ticket validation. |
 
 ### `[Log]`
 
 These options are effective when `Logging=True`.
 
-| Key | Purpose |
-| --- | --- |
-| `FileSystem` | Verbose legacy filesystem/GCF logging. Normally `False` for `server_v34`. |
-| `Account` | Legacy account/subscription API logging. Normally unnecessary for the dedicated server. |
-| `UserID` | Steam UserID/ticket validation logging. Most useful when diagnosing authentication. |
+| Key          | Purpose                                                                                 |
+| ------------ | --------------------------------------------------------------------------------------- |
+| `FileSystem` | Verbose legacy filesystem/GCF logging. Normally `False` for `server_v34`.               |
+| `Account`    | Legacy account/subscription API logging. Normally unnecessary for the dedicated server. |
+| `UserID`     | Steam UserID/ticket validation logging. Most useful when diagnosing authentication.     |
 
 ### Troubleshooting logging
 
