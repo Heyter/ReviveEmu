@@ -1,60 +1,11 @@
-# github workflow to automate builds
+name: ReviveEmu Linux build
 
-name: ReviveEmu build
-
-# Controls when the action will run.
 on: [push, pull_request, workflow_dispatch]
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  build-windows:
-    name: ${{ matrix.name }}
-
-    # The type of runner that the job will run on
-    runs-on: windows-2022
-
-    strategy:
-      matrix:
-        include:
-          - name: "Windows 32-bit"
-            arch: "Win32"
-            bindir: "Release"
-            outname: "ReviveEmu-Win32"
-          - name: "Windows 64-bit"
-            arch: "x64"
-            bindir: "x64\\Release"
-            outname: "ReviveEmu-Win64"
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Build
-        shell: cmd
-        working-directory: Steam
-        run: MSBuild -m Steam.sln -t:Steam:Rebuild -p:Configuration=Release -p:Platform=${{ matrix.arch }}
-
-      - name: Prepare files for packaging
-        shell: cmd
-        run: |
-          mkdir artifacts
-          copy Steam\${{ matrix.bindir }}\Steam.dll artifacts\Steam.dll
-          copy Steam\${{ matrix.bindir }}\Steam.pdb artifacts\Steam.pdb
-          copy Steam\steam\rev.ini artifacts\rev.ini
-          copy Steam\steam\revApps.ini artifacts\revApps.ini
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.outname }}
-          path: artifacts
-          if-no-files-found: error
   build-linux:
     name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
 
     strategy:
       matrix:
@@ -66,10 +17,6 @@ jobs:
             gccflags: "-m64"
             outname: "ReviveEmu-Linux64"
 
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       - uses: actions/checkout@v4
 
@@ -111,9 +58,10 @@ jobs:
           name: ${{ matrix.outname }}
           path: artifacts
           if-no-files-found: error
+
   create-release:
-    name: Create release
-    needs: [build-windows, build-linux]
+    name: Create Linux release
+    needs: [build-linux]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
@@ -128,16 +76,12 @@ jobs:
       - name: Create release files
         run: |
           mkdir release
-          pushd ./artifacts/
-          for DIR in *; do
-            pushd $DIR
-            zip -r9 ../../release/$DIR.zip .
-            popd
+          for DIR in ./artifacts/*; do
+            NAME=$(basename "$DIR")
+            tar -C "$DIR" -czf "$GITHUB_WORKSPACE/release/$NAME.tar.gz" .
           done
-          popd
 
       - name: Create rolling release
-        if: github.ref == 'refs/heads/main'
         uses: "marvinpinto/action-automatic-releases@latest"
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"

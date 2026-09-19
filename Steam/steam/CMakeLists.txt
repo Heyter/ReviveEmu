@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 project(Steam)
 
+if(WIN32)
+	message(FATAL_ERROR "Windows is not supported by ReviveEmu.")
+endif()
+
 include(CTest)
 
 set(CMAKE_C_STANDARD 99)
