@@ -20,17 +20,12 @@ The GitLab Runner:
 4. runs CTest;
 5. copies required Linux runtime `.so` files from `bin-deps`;
 6. creates a ready-to-extract `server_v34` runtime layout;
-7. publishes the `.tar.gz` plus checksum to **GitHub Releases** in the same production job;
-8. verifies through the GitHub API that the Release and both assets actually exist before the job can become green.
+7. passes the finished archive to a dedicated release job;
+8. creates a **GitLab Release** under `Deploy -> Releases` and stores the `.tar.gz` plus checksum in the GitLab Generic Package Registry as permanent release assets.
 
 Only Linux x86/i386 is built. x64 builds are not produced.
 
-To publish from GitLab Runner to GitHub, configure these GitLab CI/CD variables:
-
-- `GITHUB_TOKEN` — fine-grained GitHub token with `Contents: Read and write`. Store it as Masked/Hidden. If the variable is Protected, the `prod` branch must also be protected.
-- `GITHUB_REPOSITORY` — **required** GitHub target in `owner/repository` format, for example `my-account/ReviveEmu`. It is intentionally not guessed from the GitLab namespace.
-
-The production job creates a GitHub release tagged `0.0.<CI_PIPELINE_IID>` and uploads:
+The production pipeline creates a GitLab release tagged `0.0.<CI_PIPELINE_IID>` and publishes:
 
 ```text
 ReviveEmu-server_v34-prod.tar.gz

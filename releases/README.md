@@ -2,21 +2,16 @@
 
 `releases/build-prod.sh` is the canonical **Linux x86/i386-only** production build for CS:S V34 / Build 4100. x64 packages are not built.
 
-## GitLab Runner -> GitHub Releases
+## GitLab Runner -> GitLab Releases
 
-A push to `prod` runs one production job: `reviveemu:prod:server-v34`. It builds, tests, validates, packages, publishes the generated `.tar.gz` and `.sha256` to **GitHub Releases**, and then verifies that the Release contains both uploaded assets.
+A push to `prod` runs two jobs:
 
-The job cannot finish successfully if GitHub publication or verification fails. GitLab job artifacts are retained only as temporary CI diagnostics. GitHub Releases is the production download location.
+1. `reviveemu:prod:server-v34` builds, tests, validates, and packages the runtime.
+2. `reviveemu:release:server-v34` creates/updates the GitLab Release and uploads the finished files to the project's Generic Package Registry.
 
-### Required GitLab CI/CD variables
+The production download location is **GitLab -> Deploy -> Releases**. Job artifacts are retained for 30 days only as CI diagnostics; release assets are stored separately in the Generic Package Registry.
 
-Configure under **GitLab -> Settings -> CI/CD -> Variables**:
-
-- `GITHUB_TOKEN` — fine-grained GitHub token with `Contents: Read and write`. Store it as Masked/Hidden. If the variable is Protected, `prod` must also be a protected branch.
-- `GITHUB_REPOSITORY` — **required** target GitHub repository in `owner/repository` format. It is intentionally not inferred from `$CI_PROJECT_PATH`.
-- `GITHUB_TARGET_COMMITISH` — optional fallback GitHub branch/commit. If omitted and the exact GitLab commit is not present on GitHub, the publisher uses the GitHub repository default branch.
-
-The publisher first checks whether `CI_COMMIT_SHA` exists on GitHub. If it does, the release tag targets that exact commit. Otherwise it uses `GITHUB_TARGET_COMMITISH` when configured, or the GitHub default branch.
+No GitHub credentials are required. The release job uses GitLab's built-in `CI_JOB_TOKEN` through `glab` CI auto-login.
 
 Automatic tags use:
 
@@ -31,7 +26,13 @@ ReviveEmu-server_v34-prod.tar.gz
 ReviveEmu-server_v34-prod.tar.gz.sha256
 ```
 
-The publisher is retry-safe: if the release/tag already exists for the same pipeline, it updates the release metadata, replaces matching assets, and uploads the new files.
+The files are published under the Generic Package Registry package name:
+
+```text
+reviveemu-server-v34
+```
+
+`glab release create` is intentionally used instead of the legacy `release-cli`. If a Release with the same tag already exists, `glab` updates it instead of failing immediately.
 
 ## Output layout
 
