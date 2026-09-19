@@ -27,8 +27,10 @@ CHECKSUM=${2:-"$ASSET.sha256"}
 [ -s "$ASSET" ] || fail "release archive not found: $ASSET"
 [ -s "$CHECKSUM" ] || fail "release checksum not found: $CHECKSUM"
 
-TAG=${GITHUB_RELEASE_TAG:-"0.0.${CI_PIPELINE_IID:-0}"}
+RUN_NUMBER=${GITHUB_RUN_NUMBER:-0}
+TAG=${GITHUB_RELEASE_TAG:-"0.0.${RUN_NUMBER}"}
 TITLE=${GITHUB_RELEASE_TITLE:-"ReviveEmu server_v34 ${TAG}"}
+SOURCE_COMMIT=${GITHUB_SHA:-}
 API="https://api.github.com/repos/$GITHUB_REPOSITORY"
 
 api_curl() {
@@ -46,38 +48,61 @@ repo_json=$(api_curl "$API")
 default_branch=$(printf '%s' "$repo_json" | jq -r '.default_branch // empty')
 [ -n "$default_branch" ] || fail 'could not determine GitHub default branch'
 
-# Prefer the exact GitLab commit when GitHub already contains it. Otherwise use
-# an explicitly configured target, then the GitHub default branch. The release
-# notes always record the GitLab SHA that produced the binary.
-TARGET=${GITHUB_TARGET_COMMITISH:-}
-if [ -n "${CI_COMMIT_SHA:-}" ]; then
-    commit_status=$(curl -sS -o /dev/null -w '%{http_code}' \
-        --retry 3 \
-        --retry-delay 2 \
-        -H "Authorization: Bearer $GITHUB_TOKEN" \
-        -H 'Accept: application/vnd.github+json' \
-        -H 'X-GitHub-Api-Version: 2022-11-28' \
-        "$API/commits/$CI_COMMIT_SHA")
-    if [ "$commit_status" = 200 ]; then
-        TARGET=$CI_COMMIT_SHA
-    fi
+TARGET=${GITHUB_TARGET_COMMITISH:-${SOURCE_COMMIT:-$default_branch}}
+commit_json=$(api_curl "$API/commits/$TARGET")
+TARGET_SHA=$(printf '%s' "$commit_json" | jq -r '.sha // empty')
+[ -n "$TARGET_SHA" ] || fail "could not resolve release target: $TARGET"
+
+RUN_URL=${GITHUB_RUN_URL:-}
+if [ -z "$RUN_URL" ] && [ -n "${GITHUB_SERVER_URL:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+    RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 fi
-[ -n "$TARGET" ] || TARGET=$default_branch
+[ -n "$RUN_URL" ] || RUN_URL=unknown
 
 NOTES=$(cat <<EOF_NOTES
 Production Linux x86/i386 package for CS:S V34 / Build 4100.
 
-GitLab commit: ${CI_COMMIT_SHA:-unknown}
-GitLab pipeline: ${CI_PIPELINE_URL:-unknown}
-Release target on GitHub: ${TARGET}
+Build commit: ${SOURCE_COMMIT:-$TARGET_SHA}
+CI run: ${RUN_URL}
 
 Extract the archive directly into the server_v34 root, then run ./cleanup-old-emulators.sh.
 EOF_NOTES
 )
 
-existing_file=$(mktemp)
-trap 'rm -f "$existing_file"' EXIT
-status=$(curl -sS -o "$existing_file" -w '%{http_code}' \
+# Create the tag explicitly before the Release. This keeps the Release bound to
+# the exact workflow commit and avoids GitHub trying to synthesize a tag from a
+# branch during release creation.
+tag_file=$(mktemp)
+release_file=$(mktemp)
+trap 'rm -f "$tag_file" "$release_file"' EXIT
+
+tag_status=$(curl -sS -o "$tag_file" -w '%{http_code}' \
+    --retry 3 \
+    --retry-delay 2 \
+    -H "Authorization: Bearer $GITHUB_TOKEN" \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'X-GitHub-Api-Version: 2022-11-28' \
+    "$API/git/ref/tags/$TAG")
+
+if [ "$tag_status" = 404 ]; then
+    tag_payload=$(jq -n \
+        --arg ref "refs/tags/$TAG" \
+        --arg sha "$TARGET_SHA" \
+        '{ref:$ref, sha:$sha}')
+    api_curl -X POST "$API/git/refs" -d "$tag_payload" >/dev/null
+    printf '==> Created GitHub tag %s at %s\n' "$TAG" "$TARGET_SHA"
+elif [ "$tag_status" = 200 ]; then
+    existing_tag_sha=$(jq -r '.object.sha // empty' "$tag_file")
+    [ -n "$existing_tag_sha" ] || fail "could not resolve existing tag: $TAG"
+    [ "$existing_tag_sha" = "$TARGET_SHA" ] || \
+        fail "tag $TAG already points to $existing_tag_sha instead of $TARGET_SHA"
+    printf '==> Reusing existing GitHub tag %s\n' "$TAG"
+else
+    cat "$tag_file" >&2
+    fail "GitHub tag lookup failed with HTTP $tag_status"
+fi
+
+status=$(curl -sS -o "$release_file" -w '%{http_code}' \
     --retry 3 \
     --retry-delay 2 \
     -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -86,7 +111,8 @@ status=$(curl -sS -o "$existing_file" -w '%{http_code}' \
     "$API/releases/tags/$TAG")
 
 if [ "$status" = 200 ]; then
-    RELEASE_ID=$(jq -r '.id' "$existing_file")
+    RELEASE_ID=$(jq -r '.id // empty' "$release_file")
+    [ -n "$RELEASE_ID" ] || fail 'existing GitHub Release has no id'
     payload=$(jq -n \
         --arg name "$TITLE" \
         --arg body "$NOTES" \
@@ -96,16 +122,15 @@ if [ "$status" = 200 ]; then
 elif [ "$status" = 404 ]; then
     payload=$(jq -n \
         --arg tag "$TAG" \
-        --arg target "$TARGET" \
         --arg name "$TITLE" \
         --arg body "$NOTES" \
-        '{tag_name:$tag, target_commitish:$target, name:$name, body:$body, draft:false, prerelease:false}')
+        '{tag_name:$tag, name:$name, body:$body, draft:false, prerelease:false}')
     response=$(api_curl -X POST "$API/releases" -d "$payload")
     RELEASE_ID=$(printf '%s' "$response" | jq -r '.id // empty')
     [ -n "$RELEASE_ID" ] || fail 'GitHub did not return a release id'
     printf '==> Created GitHub Release %s (id=%s)\n' "$TAG" "$RELEASE_ID"
 else
-    cat "$existing_file" >&2
+    cat "$release_file" >&2
     fail "GitHub release lookup failed with HTTP $status"
 fi
 

@@ -8,11 +8,11 @@ For `server_v34`, ReviveEmu is the **single supported emulator/authentication ba
 
 Russian documentation: [README_RU.md](README_RU.md).
 
-## Production build / GitLab CI
+## Production build / GitHub Actions
 
-`.gitlab-ci.yml` builds the production package on the `prod` branch.
+`.github/workflows/build.yml` builds the production package for pushes to the `prod` branch. Pull requests still run the build/test/package validation, but do not publish a Release.
 
-The GitLab Runner:
+The GitHub Actions workflow:
 
 1. installs the Linux i386/multilib toolchain;
 2. verifies the pinned Build 4100 inputs in `bin-deps/SHA256SUMS`;
@@ -20,12 +20,14 @@ The GitLab Runner:
 4. runs CTest;
 5. copies required Linux runtime `.so` files from `bin-deps`;
 6. creates a ready-to-extract `server_v34` runtime layout;
-7. passes the finished archive to a dedicated release job;
-8. creates a **GitLab Release** under `Deploy -> Releases` and stores the `.tar.gz` plus checksum in the GitLab Generic Package Registry as permanent release assets.
+7. stores the package as a 30-day Actions artifact;
+8. on `prod`, creates a **GitHub Release**, uploads the `.tar.gz` plus checksum, and verifies both uploaded assets through the GitHub API.
 
 Only Linux x86/i386 is built. x64 builds are not produced.
 
-The production pipeline creates a GitLab release tagged `0.0.<CI_PIPELINE_IID>` and publishes:
+No custom PAT is required for normal GitHub-hosted Actions. The workflow uses the repository-provided `GITHUB_TOKEN` and explicitly requests `contents: write` for the build job.
+
+The production workflow creates a GitHub Release tagged `0.0.<GITHUB_RUN_NUMBER>` and uploads:
 
 ```text
 ReviveEmu-server_v34-prod.tar.gz

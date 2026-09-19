@@ -118,6 +118,13 @@ cp "$ROOT_DIR/releases/server_v34/cleanup-old-emulators.sh" "$OUTPUT_DIR/cleanup
 cp "$ROOT_DIR/releases/server_v34/REVIVEEMU_README_RU.md" "$OUTPUT_DIR/REVIVEEMU_README_RU.md"
 chmod +x "$OUTPUT_DIR/cleanup-old-emulators.sh"
 
+BUILD_COMMIT=${GITHUB_SHA:-unknown}
+BUILD_PIPELINE=
+if [ -z "$BUILD_PIPELINE" ] && [ -n "${GITHUB_SERVER_URL:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+    BUILD_PIPELINE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+fi
+[ -n "$BUILD_PIPELINE" ] || BUILD_PIPELINE=local
+
 cat > "$OUTPUT_DIR/BUILD_INFO.txt" <<INFO
 project=ReviveEmu
 target=server_v34
@@ -125,8 +132,8 @@ platform=linux
 architecture=x86/i386
 build_type=Release
 milestone=$MILESTONE
-commit=${CI_COMMIT_SHA:-unknown}
-pipeline=${CI_PIPELINE_URL:-local}
+commit=$BUILD_COMMIT
+pipeline=$BUILD_PIPELINE
 INFO
 
 printf '%s\n' '==> Validating packaged runtime'

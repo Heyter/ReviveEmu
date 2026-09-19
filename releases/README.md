@@ -2,22 +2,21 @@
 
 `releases/build-prod.sh` is the canonical **Linux x86/i386-only** production build for CS:S V34 / Build 4100. x64 packages are not built.
 
-## GitLab Runner -> GitLab Releases
+## GitHub Actions -> GitHub Releases
 
-A push to `prod` runs two jobs:
+`.github/workflows/build.yml` runs the production build on pushes to `prod`. Pull requests run the same build/test/package validation without publishing a Release.
 
-1. `reviveemu:prod:server-v34` builds, tests, validates, and packages the runtime.
-2. `reviveemu:release:server-v34` creates/updates the GitLab Release and uploads the finished files to the project's Generic Package Registry.
+For a successful `prod` run the workflow:
 
-The production download location is **GitLab -> Deploy -> Releases**. Job artifacts are retained for 30 days only as CI diagnostics; release assets are stored separately in the Generic Package Registry.
+1. builds and tests the Linux x86/i386 binaries;
+2. creates `ReviveEmu-server_v34-prod.tar.gz` and its `.sha256` file;
+3. stores the output as a 30-day GitHub Actions artifact;
+4. creates/reuses tag `0.0.<GITHUB_RUN_NUMBER>` for the exact workflow commit;
+5. creates or updates the GitHub Release for that tag;
+6. uploads the archive and checksum;
+7. verifies through the GitHub API that the Release and both assets exist.
 
-No GitHub credentials are required. The release job uses GitLab's built-in `CI_JOB_TOKEN` through `glab` CI auto-login.
-
-Automatic tags use:
-
-```text
-0.0.<CI_PIPELINE_IID>
-```
+The release step uses the automatically provided `GITHUB_TOKEN`. The workflow declares `contents: write`; a custom PAT or repository secret is not required under normal GitHub Actions repository policy.
 
 Release assets:
 
@@ -26,13 +25,7 @@ ReviveEmu-server_v34-prod.tar.gz
 ReviveEmu-server_v34-prod.tar.gz.sha256
 ```
 
-The files are published under the Generic Package Registry package name:
-
-```text
-reviveemu-server-v34
-```
-
-`glab release create` is intentionally used instead of the legacy `release-cli`. If a Release with the same tag already exists, `glab` updates it instead of failing immediately.
+The publisher is retry-safe. Re-running the same workflow run reuses the same tag, updates the release metadata, replaces matching assets, and verifies the final state.
 
 ## Output layout
 

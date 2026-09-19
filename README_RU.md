@@ -6,11 +6,11 @@ ReviveEmu — Steam emulator/authentication backend для **Counter-Strike: Sou
 
 Для `server_v34` ReviveEmu является **единственной поддерживаемой точкой эмуляции/авторизации**. Не нужно одновременно ставить eSTEAMATiON, REVOLUTiON или другой Steam emulator.
 
-## Production-сборка / GitLab CI
+## Production-сборка / GitHub Actions
 
-`.gitlab-ci.yml` собирает production package в ветке `prod`.
+`.github/workflows/build.yml` собирает production package при push в ветку `prod`. Для pull request выполняются сборка, тесты и проверка package, но GitHub Release не публикуется.
 
-GitLab Runner:
+GitHub Actions workflow:
 
 1. устанавливает Linux i386/multilib toolchain;
 2. проверяет закреплённые Build 4100 зависимости через `bin-deps/SHA256SUMS`;
@@ -18,12 +18,14 @@ GitLab Runner:
 4. запускает CTest;
 5. копирует необходимые Linux `.so` из `bin-deps`;
 6. формирует готовую структуру `server_v34`;
-7. передаёт готовый архив в отдельный release job;
-8. создаёт **GitLab Release** в `Deploy → Releases`, а `.tar.gz` и checksum сохраняет в GitLab Generic Package Registry как постоянные assets релиза.
+7. сохраняет package как Actions artifact на 30 дней;
+8. для `prod` создаёт **GitHub Release**, загружает `.tar.gz` и checksum и через GitHub API проверяет наличие обоих файлов.
 
 Собирается только Linux x86/i386. x64-сборки не создаются.
 
-Production pipeline создаёт GitLab Release с тегом `0.0.<CI_PIPELINE_IID>` и публикует:
+Отдельный PAT при обычном запуске GitHub Actions не нужен. Workflow использует автоматически выдаваемый репозиторием `GITHUB_TOKEN` и запрашивает для job разрешение `contents: write`.
+
+Production workflow создаёт GitHub Release с тегом `0.0.<GITHUB_RUN_NUMBER>` и загружает:
 
 ```text
 ReviveEmu-server_v34-prod.tar.gz
