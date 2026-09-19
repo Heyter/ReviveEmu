@@ -65,7 +65,7 @@ jobs:
             releases/ReviveEmu-server_v34-prod.tar.gz.sha256
 
       - name: Publish GitHub Release
-        if: github.ref == 'refs/heads/prod' && github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/prod')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
