@@ -53,18 +53,10 @@ commit_json=$(api_curl "$API/commits/$TARGET")
 TARGET_SHA=$(printf '%s' "$commit_json" | jq -r '.sha // empty')
 [ -n "$TARGET_SHA" ] || fail "could not resolve release target: $TARGET"
 
-RUN_URL=${GITHUB_RUN_URL:-}
-if [ -z "$RUN_URL" ] && [ -n "${GITHUB_SERVER_URL:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-    RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-fi
-[ -n "$RUN_URL" ] || RUN_URL=unknown
-
 NOTES=$(cat <<EOF_NOTES
 Production Linux x86/i386 package for CS:S V34 / Build 4100.
 
 Build commit: ${SOURCE_COMMIT:-$TARGET_SHA}
-CI run: ${RUN_URL}
-
 Extract the archive directly into the server_v34 root, then run ./cleanup-old-emulators.sh.
 EOF_NOTES
 )
