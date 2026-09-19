@@ -424,6 +424,10 @@ FodyWeavers.xsd
 *.dll
 *.so.*
 
+# ReviveEmu runtime dependencies are intentionally versioned.
+!/bin-deps/
+!/bin-deps/**
+
 
 # Fortran module files
 *.mod
@@ -468,3 +472,7 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Generated production release output (keep releases scripts/docs tracked)
+/releases/ReviveEmu-server_v34-prod/
+/releases/ReviveEmu-server_v34-prod.tar.gz

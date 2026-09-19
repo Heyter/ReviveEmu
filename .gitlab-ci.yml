@@ -1,0 +1,39 @@
+stages:
+  - build
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+  REVIVE_RELEASE_DIR: "$CI_PROJECT_DIR/releases"
+  REVIVE_RELEASE_NAME: "ReviveEmu-server_v34-prod"
+
+reviveemu:prod:server-v34:
+  stage: build
+  image: debian:12-slim
+  interruptible: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "prod"'
+  before_script:
+    - apt-get update
+    - >-
+      apt-get install -y --no-install-recommends
+      ca-certificates
+      build-essential
+      cmake
+      ninja-build
+      file
+      git
+      binutils
+      patchelf
+      gcc-multilib
+      g++-multilib
+    - rm -rf /var/lib/apt/lists/*
+  script:
+    - chmod +x releases/build-prod.sh releases/server_v34/cleanup-old-emulators.sh
+    - REVIVE_LEGACY_MILESTONE="prod-${CI_COMMIT_SHORT_SHA}" releases/build-prod.sh
+  artifacts:
+    name: "reviveemu-server-v34-prod-${CI_COMMIT_SHORT_SHA}"
+    when: on_success
+    expire_in: 30 days
+    paths:
+      - releases/ReviveEmu-server_v34-prod/
+      - releases/ReviveEmu-server_v34-prod.tar.gz
